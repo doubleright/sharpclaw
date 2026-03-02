@@ -42,10 +42,10 @@ public class MemoryPipelineChatReducer : IChatReducer
     /// <summary>
     /// 上一次的工作记忆内容快照（对话结束时保存），供 MainAgent 在新会话开始时注入。
     /// </summary>
-    public string? OldWorkingMemoryContent { get; set; }
+    public List<ChatMessage> OldWorkingMemoryContent { get; set; } = [];
 
     /// <summary>由 MainAgent 在流式输出时累积的工作记忆内容。</summary>
-    public StringBuilder WorkingMemoryBuffer { get; } = new();
+    public List<ChatMessage> WorkingMemoryBuffer { get; } = [];
 
     /// <param name="resetThreshold">消息数超过此阈值时触发清空和归档</param>
     public MemoryPipelineChatReducer(
@@ -109,11 +109,12 @@ public class MemoryPipelineChatReducer : IChatReducer
         // ── 3. 溢出时清空对话并归档 ──
         ArchiveResult? archiveResult = null;
 
-        if (conversationMessages.Sum(x => x.Contents.Count()) > _resetThreshold && WorkingMemoryBuffer.Length > 200000)
+        List<ChatMessage> allMessages = [.. OldWorkingMemoryContent, .. conversationMessages];
+        if (allMessages.Sum(x => x.Contents.Count()) > _resetThreshold)
         {
             // 进入裁剪，清空累积的工作记忆
-            OldWorkingMemoryContent = string.Empty;
-            var workingMemoryBuffer = WorkingMemoryBuffer.ToString();
+            OldWorkingMemoryContent.Clear();
+            var workingMemoryBuffer = WorkingMemoryBuffer.ToList();
             WorkingMemoryBuffer.Clear();
 
             // 向量记忆保存（归档前，确保对话内容被向量记忆捕获）
@@ -138,7 +139,7 @@ public class MemoryPipelineChatReducer : IChatReducer
             }
 
             // 归档（摘要 → 近期记忆 → 溢出巩固核心记忆）
-            await SaveHistoryFileAsync(workingMemoryBuffer, conversationMessages, cancellationToken);
+            await SaveHistoryFileAsync([.. workingMemoryBuffer, .. conversationMessages], cancellationToken);
             if (_archiver is not null)
             {
                 try
@@ -155,14 +156,15 @@ public class MemoryPipelineChatReducer : IChatReducer
             conversationMessages = [];
         }
 
+        var memoryMessages = new List<ChatMessage>();
         // ── 4. 注入记忆 ──
-        InjectMemories(systemMessages, archiveResult, existingRecentMemory, existingPrimaryMemory);
+        InjectMemories(systemMessages, memoryMessages, archiveResult, existingRecentMemory, existingPrimaryMemory);
 
         // ── 5. 注入工作记忆（上次会话的对话快照）──
-        if (!string.IsNullOrWhiteSpace(OldWorkingMemoryContent))
+        if (OldWorkingMemoryContent.Count > 0)
         {
-            InjectFakeCommandCat(systemMessages, _agentContext.GetSessionWorkingMemoryFilePath(), OldWorkingMemoryContent, AutoWorkingMemoryKey);
-            AppLogger.Log($"[Reducer] 已注入工作记忆（{OldWorkingMemoryContent.Length}字）");
+            memoryMessages.AddRange(OldWorkingMemoryContent);
+            AppLogger.Log($"[Reducer] 已注入工作记忆（{OldWorkingMemoryContent.Count}条）");
         }
 
         // ── 6. 确保对话以用户消息开头 ──
@@ -173,12 +175,13 @@ public class MemoryPipelineChatReducer : IChatReducer
             });
 
         LastMessages = conversationMessages;
-        IEnumerable<ChatMessage> result = [.. systemMessages, .. LastMessages];
+        if (memoryMessages.Count > 0)
+            memoryMessages.Insert(0, new ChatMessage(ChatRole.User, "查询最近记忆"));
+        IEnumerable<ChatMessage> result = [.. systemMessages, .. memoryMessages, .. LastMessages];
         return result;
     }
 
     private async Task SaveHistoryFileAsync(
-        string workingMemory,
         IReadOnlyList<ChatMessage> messages,
         CancellationToken cancellationToken)
     {
@@ -193,8 +196,6 @@ public class MemoryPipelineChatReducer : IChatReducer
 
             var sb = new StringBuilder();
             sb.Append($"# 对话历史 {DateTime.Now:yyyy-MM-dd HH:mm:ss}\n\n");
-
-            sb.AppendLine(workingMemory);
 
             foreach (var msg in messages)
             {
@@ -242,9 +243,9 @@ public class MemoryPipelineChatReducer : IChatReducer
     {
         try
         {
-            var content = WorkingMemoryBuffer.ToString();
+            var content = JsonSerializer.Serialize(WorkingMemoryBuffer);
             File.WriteAllText(_agentContext.GetSessionWorkingMemoryFilePath(), content);
-            AppLogger.Log($"[Reducer] 已保存工作记忆（{content.Length}字）");
+            AppLogger.Log($"[Reducer] 已保存工作记忆（{WorkingMemoryBuffer.Count}条）");
         }
         catch (Exception ex)
         {
@@ -311,6 +312,7 @@ public class MemoryPipelineChatReducer : IChatReducer
 
     private void InjectMemories(
         List<ChatMessage> systemMessages,
+        List<ChatMessage> memoryMessages,
         ArchiveResult? archiveResult,
         ChatMessage? existingRecentMemory,
         ChatMessage? existingPrimaryMemory)
@@ -343,13 +345,13 @@ public class MemoryPipelineChatReducer : IChatReducer
 
         if (!string.IsNullOrWhiteSpace(primaryMemory))
         {
-            InjectFakeCommandCat(systemMessages, _agentContext.GetSessionPrimaryMemoryFilePath(), primaryMemory, AutoPrimaryMemoryKey);
+            InjectFakeCommandCat(memoryMessages, _agentContext.GetSessionPrimaryMemoryFilePath(), primaryMemory, AutoPrimaryMemoryKey);
             AppLogger.Log($"[Reducer] 已注入核心记忆（{primaryMemory.Length}字）");
         }
 
         if (!string.IsNullOrWhiteSpace(recentMemory))
         {
-            InjectFakeCommandCat(systemMessages, _agentContext.GetSessionRecentMemoryFilePath(), recentMemory, AutoRecentMemoryKey);
+            InjectFakeCommandCat(memoryMessages, _agentContext.GetSessionRecentMemoryFilePath(), recentMemory, AutoRecentMemoryKey);
             AppLogger.Log($"[Reducer] 已注入近期记忆（{recentMemory.Length}字）");
         }
     }

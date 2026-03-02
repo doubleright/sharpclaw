@@ -52,7 +52,7 @@ public class AgentContext : IAgentContext
 
     public string GetSessionWorkingMemoryFilePath()
     {
-        return Path.Combine(_sessionPath, "working_memory.md");
+        return Path.Combine(_sessionPath, "working_memory.json");
     }
 
     public string GetSessionPrimaryMemoryFilePath()

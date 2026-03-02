@@ -81,25 +81,11 @@ public class MainAgent
         SystemPrompt.AppendLine($"[工作目录] {workspaceDir}");
         SystemPrompt.Append("- 你的所有文件操作都应基于这个工作目录，且不能访问或修改它之外的文件。");
 
-        _workingMemoryPath = Path.Combine(sessionDir, "working_memory.md");
-        var recentMemoryPath = Path.Combine(sessionDir, "recent_memory.md");
-        var primaryMemoryPath = Path.Combine(sessionDir, "primary_memory.md");
+        _workingMemoryPath = _agentContext.GetSessionWorkingMemoryFilePath();
+        var recentMemoryPath = _agentContext.GetSessionRecentMemoryFilePath();
+        var primaryMemoryPath = _agentContext.GetSessionPrimaryMemoryFilePath();
 
         _chatIO = chatIO;
-
-        //迁移旧的记忆文件
-        if (cacheConfig.UseSessionId == "default")
-        {
-            var oldWorkingMemoryPath = Path.Combine(sharpclawDir, "working_memory.md");
-            var oldRecentMemoryPath = Path.Combine(sharpclawDir, "recent_memory.md");
-            var oldPrimaryMemoryPath = Path.Combine(sharpclawDir, "primary_memory.md");
-            if (File.Exists(oldWorkingMemoryPath) && !File.Exists(_workingMemoryPath))
-                File.Move(oldWorkingMemoryPath, _workingMemoryPath);
-            if (File.Exists(oldRecentMemoryPath) && !File.Exists(recentMemoryPath))
-                File.Move(oldRecentMemoryPath, recentMemoryPath);
-            if (File.Exists(oldPrimaryMemoryPath) && !File.Exists(primaryMemoryPath))
-                File.Move(oldPrimaryMemoryPath, primaryMemoryPath);
-        }
 
         // 按智能体创建各自的 AI 客户端
         var mainClient = ClientFactory.CreateAgentClient(config, config.Agents.Main);
@@ -201,10 +187,9 @@ public class MainAgent
         _reducer.WorkingMemoryBuffer.Clear();
         if (File.Exists(_workingMemoryPath))
         {
-            _reducer.OldWorkingMemoryContent = File.ReadAllText(_workingMemoryPath);
+            _reducer.OldWorkingMemoryContent = JsonSerializer.Deserialize<List<ChatMessage>>(File.ReadAllText(_workingMemoryPath)) ?? [];
 
-            if (!string.IsNullOrWhiteSpace(_reducer.OldWorkingMemoryContent))
-                _reducer.WorkingMemoryBuffer.Append(_reducer.OldWorkingMemoryContent + "\n\n---\n\n");
+            _reducer.WorkingMemoryBuffer.AddRange(_reducer.OldWorkingMemoryContent);
         }
 
         using var aiCts = CancellationTokenSource.CreateLinkedTokenSource(
@@ -236,44 +221,55 @@ public class MainAgent
 
         // 流式输出
         _reducer.UserInput = input;
-        _reducer.WorkingMemoryBuffer.Append($"### 用户\n\n{input}\n\n");
+        _reducer.WorkingMemoryBuffer.Add(new ChatMessage(ChatRole.User, input));
         AIContent? lastContent = null;
         AppLogger.SetStatus("AI 思考中...");
         _chatIO.BeginAiResponse();
         try
         {
+            var message = new ChatMessage();
             await foreach (var update in _agent.RunStreamingAsync(inputMessages, _session!).WithCancellation(aiToken))
             {
                 foreach (var content in update.Contents)
                 {
+                    var lc = message.Contents.LastOrDefault();
+                    if (lc != null && !lc.GetType().Equals(content.GetType()) || lc is FunctionCallContent || lc is FunctionResultContent)
+                    {
+                        var c = message.Contents.Where(x => x is FunctionCallContent || x is FunctionResultContent || (x is TextContent text && text.Text.Length > 0) || (x is TextReasoningContent reasoning && reasoning.Text.Length > 0)).Count();
+                        if (c > 0)
+                            _reducer.WorkingMemoryBuffer.Add(message);
+                        message = new ChatMessage();
+                    }
                     switch (content)
                     {
                         case TextContent text:
+                            var ltext = message.Contents.LastOrDefault() as TextContent;
+                            if (ltext == null)
+                            {
+                                ltext = new TextContent("");
+                                message.Contents.Add(ltext);
+                            }
+                            ltext.Text += text.Text;
                             _chatIO.AppendChat(text.Text);
-                            if (lastContent is not TextContent)
-                                _reducer.WorkingMemoryBuffer.Append("### 助手\n\n");
-                            _reducer.WorkingMemoryBuffer.Append(text.Text);
                             break;
                         case TextReasoningContent reasoning:
-                            if (lastContent is TextContent)
-                                _reducer.WorkingMemoryBuffer.AppendLine();
+                            var lreasoning = message.Contents.LastOrDefault() as TextReasoningContent;
+                            if (lreasoning == null)
+                            {
+                                lreasoning = new TextReasoningContent("");
+                                message.Contents.Add(lreasoning);
+                            }
+                            lreasoning.Text += reasoning.Text;
                             AppLogger.SetStatus($"[Main]思考中...");
                             Append("Reasoning", reasoning.Text);
                             break;
                         case FunctionCallContent call:
-                            if (lastContent is TextContent)
-                                _reducer.WorkingMemoryBuffer.AppendLine();
+                            message.Contents.Add(call);
                             AppLogger.SetStatus($"[Main]调用工具: {call.Name}");
                             AppLogger.Log($"[Main]调用工具: {call.Name}");
-                            var args = call.Arguments is not null
-                                ? JsonSerializer.Serialize(call.Arguments)
-                                : "";
-                            _reducer.WorkingMemoryBuffer.Append($"#### 工具调用: {call.Name}\n\n参数: `{args}`\n\n");
                             break;
-                        case FunctionResultContent result:
-                            if (lastContent is TextContent)
-                                _reducer.WorkingMemoryBuffer.AppendLine();
-                            _reducer.WorkingMemoryBuffer.Append($"<details>\n<summary>执行结果</summary>\n\n```\n{result.Result?.ToString() ?? ""}\n```\n\n</details>\n\n");
+                        case FunctionResultContent functionResult:
+                            message.Contents.Add(functionResult);
                             break;
                     }
                     lastContent = content;
@@ -286,12 +282,11 @@ public class MainAgent
             return;
         }
         _chatIO.AppendChat("\n");
-        _reducer.WorkingMemoryBuffer.Append("\n\n---\n\n");
 
         // 持久化工作记忆
         try
         {
-            File.WriteAllText(_workingMemoryPath, _reducer.WorkingMemoryBuffer.ToString());
+            File.WriteAllText(_workingMemoryPath, JsonSerializer.Serialize(_reducer.WorkingMemoryBuffer));
         }
         catch (Exception ex)
         {

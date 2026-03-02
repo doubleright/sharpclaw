@@ -1,5 +1,6 @@
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
+using sharpclaw.Chat;
 using sharpclaw.Core;
 using sharpclaw.UI;
 using System.Text;
@@ -184,6 +185,9 @@ public class ConversationArchiver
             ReadFile(_primaryMemoryPath));
     }
 
+    /// <summary>读取工作记忆。</summary>
+    public string? ReadWorkingMemory() => ReadFile(_workingMemoryPath);
+
     /// <summary>读取近期记忆。</summary>
     public string? ReadRecentMemory() => ReadFile(_recentMemoryPath);
 
@@ -209,8 +213,35 @@ public class ConversationArchiver
                 ChatOptions = options
             });
 
+            var messages = new List<ChatMessage>();
+
+            var workingMemoryContent = ReadWorkingMemory() ?? "";
+            if (!string.IsNullOrWhiteSpace(workingMemoryContent))
+            {
+                var workingMemoryMessages = JsonSerializer.Deserialize<List<ChatMessage>>(workingMemoryContent);
+                if (workingMemoryMessages != null && workingMemoryMessages.Count > 0)
+                    messages.AddRange(workingMemoryMessages);
+            }
+
+            if (messages.Count == 0)
+                return;
+
+            var primaryMemoryContent = ReadPrimaryMemory() ?? "";
+            if (!string.IsNullOrWhiteSpace(primaryMemoryContent))
+            {
+                messages.Add(new ChatMessage(ChatRole.User, "查询核心记忆"));
+                MemoryPipelineChatReducer.InjectFakeCommandCat(messages, _primaryMemoryPath, primaryMemoryContent, AutoSummaryKey);
+            }
+
+            var recentMemoryContent = ReadRecentMemory() ?? "";
+            if (!string.IsNullOrWhiteSpace(recentMemoryContent))
+            {
+                messages.Add(new ChatMessage(ChatRole.User, "查询近期记忆"));
+                MemoryPipelineChatReducer.InjectFakeCommandCat(messages, _recentMemoryPath, recentMemoryContent, AutoSummaryKey);
+            }
+
             await RunAgentStreamingAsync(agent,
-                new ChatMessage(ChatRole.User, "请读取工作记忆文件，为被裁剪的对话生成摘要并保存到近期记忆。"),
+                new ChatMessage(ChatRole.User, "总结以上对话，生成摘要并保存到近期记忆。"),
                 "Summarizer", cancellationToken);
         }
         catch (Exception ex)
