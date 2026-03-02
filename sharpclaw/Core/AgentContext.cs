@@ -14,6 +14,7 @@ public interface IAgentContext
     string GetSessionPrimaryMemoryFilePath();
     string GetSessionRecentMemoryFilePath();
     string GetSessionHistoryDirPath();
+    string GetSkillsDirPath();
 }
 
 public class AgentContext : IAgentContext
@@ -67,5 +68,10 @@ public class AgentContext : IAgentContext
     public string GetSessionHistoryDirPath()
     {
         return Path.Combine(_sessionPath, "history");
+    }
+
+    public string GetSkillsDirPath()
+    {
+        return Path.Combine(_workspacePath, "skills");
     }
 }

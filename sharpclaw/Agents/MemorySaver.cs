@@ -17,7 +17,7 @@ public class MemorySaver
 {
     private readonly IChatClient _client;
     private readonly IMemoryStore _memoryStore;
-    private readonly AIFunction[] _fileTools;
+    private readonly AITool[] _fileTools;
     private readonly string _agentPrompt;
 
     public MemorySaver(
@@ -26,7 +26,7 @@ public class MemorySaver
         string workingMemoryPath,
         string recentMemoryPath,
         string primaryMemoryPath,
-        AIFunction[] fileTools)
+        AITool[] fileTools)
     {
         _client = baseClient;
         _memoryStore = memoryStore;

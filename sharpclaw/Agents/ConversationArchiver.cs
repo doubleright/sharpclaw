@@ -26,7 +26,7 @@ public class ConversationArchiver
     private readonly string _recentMemoryPath;
     private readonly string _primaryMemoryPath;
     private readonly string _historyDir;
-    private readonly AIFunction[] _tools;
+    private readonly AITool[] _tools;
     private readonly string _summarizerPrompt;
     private readonly string _consolidatorPrompt;
 
@@ -36,7 +36,7 @@ public class ConversationArchiver
         string workingMemoryPath,
         string recentMemoryPath,
         string primaryMemoryPath,
-        AIFunction[] tools)
+        AITool[] tools)
     {
         _client = client;
         _sessionDirPath = sessionDirPath;

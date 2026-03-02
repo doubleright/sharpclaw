@@ -1,3 +1,4 @@
+using AgentSkillsDotNet;
 using Microsoft.Extensions.AI;
 using sharpclaw.Commands;
 using sharpclaw.Core.TaskManagement;
@@ -14,7 +15,7 @@ public static class AgentBootstrap
     public record BootstrapResult(
         SharpclawConfig Config,
         TaskManager TaskManager,
-        AIFunction[] CommandSkills,
+        AITool[] CommandSkills,
         IMemoryStore? MemoryStore,
         IAgentContext AgentContext);
 
@@ -74,8 +75,16 @@ public static class AgentBootstrap
         .Select(d => AIFunctionFactory.Create(d))
         .ToArray();
 
+        var skillsDirPath = agentContext.GetSkillsDirPath();
+        if (!Directory.Exists(skillsDirPath))
+            Directory.CreateDirectory(skillsDirPath);
+
+        var agentSkillsFactory = new AgentSkillsFactory();
+        var agentSkills = agentSkillsFactory.GetAgentSkills(skillsDirPath);
+        var skillTools = agentSkills.GetAsTools();
+
         var memoryStore = ClientFactory.CreateMemoryStore(config);
 
-        return new BootstrapResult(config, taskManager, commandSkills, memoryStore, agentContext);
+        return new BootstrapResult(config, taskManager, [.. commandSkills, .. skillTools], memoryStore, agentContext);
     }
 }

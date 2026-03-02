@@ -45,13 +45,12 @@ public class MainAgent
     private readonly string _workingMemoryPath;
     private readonly MemoryPipelineChatReducer _reducer;
     private readonly IAgentContext _agentContext;
-    private InMemoryChatHistoryProvider? _historyProvider;
     private AgentSession? _session;
 
     public MainAgent(
         SharpclawConfig config,
         IMemoryStore? memoryStore,
-        AIFunction[] commandSkills,
+        AITool[] commandSkills,
         IChatIO chatIO,
         IAgentContext agentContext)
     {
@@ -130,12 +129,12 @@ public class MainAgent
         if (config.Agents.Summarizer.Enabled)
         {
             var archiverClient = ClientFactory.CreateAgentClient(config, config.Agents.Summarizer);
-            AIFunction[] archiverTools = [.. fileTools, .. memoryTools];
+            AITool[] archiverTools = [.. fileTools, .. memoryTools];
             archiver = new ConversationArchiver(
                 archiverClient, sessionDir, _workingMemoryPath, recentMemoryPath, primaryMemoryPath, archiverTools);
         }
 
-        AIFunction[] tools = [.. memoryTools, .. commandSkills];
+        AITool[] tools = [.. memoryTools, .. commandSkills];
         var systemPrompt = SystemPrompt.ToString();
 
         _reducer = new MemoryPipelineChatReducer(
