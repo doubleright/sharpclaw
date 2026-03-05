@@ -70,8 +70,6 @@ public class MemoryPipelineChatReducer : IChatReducer
         // ── 1. 剥离旧的自动注入消息 ──
         var systemMessages = new List<ChatMessage>();
         var conversationMessages = new List<ChatMessage>();
-        ChatMessage? existingRecentMemory = null;
-        ChatMessage? existingPrimaryMemory = null;
 
         foreach (var msg in all)
         {
@@ -84,15 +82,9 @@ public class MemoryPipelineChatReducer : IChatReducer
             if (msg.AdditionalProperties?.ContainsKey(AutoWorkingMemoryKey) == true)
                 continue;
             if (msg.AdditionalProperties?.ContainsKey(AutoRecentMemoryKey) == true)
-            {
-                existingRecentMemory = msg;
                 continue;
-            }
             if (msg.AdditionalProperties?.ContainsKey(AutoPrimaryMemoryKey) == true)
-            {
-                existingPrimaryMemory = msg;
                 continue;
-            }
 
             if (msg.Role == ChatRole.System)
                 systemMessages.Add(msg);
@@ -159,12 +151,19 @@ public class MemoryPipelineChatReducer : IChatReducer
 
         var memoryMessages = new List<ChatMessage>();
         // ── 4. 注入记忆 ──
-        InjectMemories(systemMessages, memoryMessages, archiveResult, existingRecentMemory, existingPrimaryMemory);
+        InjectMemories(systemMessages, memoryMessages, archiveResult);
 
         // ── 5. 注入工作记忆（上次会话的对话快照）──
         if (OldWorkingMemoryContent.Count > 0)
         {
-            memoryMessages.AddRange(OldWorkingMemoryContent);
+            foreach (var msg in OldWorkingMemoryContent)
+            {
+                var taggedMsg = new ChatMessage(msg.Role, msg.Contents.ToList())
+                {
+                    AdditionalProperties = new() { [AutoWorkingMemoryKey] = true }
+                };
+                memoryMessages.Add(taggedMsg);
+            }
             AppLogger.Log($"[Reducer] 已注入工作记忆（{OldWorkingMemoryContent.Count}条）");
         }
 
@@ -176,8 +175,6 @@ public class MemoryPipelineChatReducer : IChatReducer
             });
 
         LastMessages = conversationMessages;
-        if (memoryMessages.Count > 0)
-            memoryMessages.Insert(0, new ChatMessage(ChatRole.User, "查询最近记忆"));
         IEnumerable<ChatMessage> result = [.. systemMessages, .. memoryMessages, .. LastMessages];
         return result;
     }
@@ -312,7 +309,10 @@ public class MemoryPipelineChatReducer : IChatReducer
             }
         };
 
-        messages.Add(new ChatMessage(ChatRole.User, "查询最近记忆"));
+        messages.Add(new ChatMessage(ChatRole.User, "查询最近记忆")
+        {
+            AdditionalProperties = new() { [messageKey] = true }
+        });
         messages.Add(assistantMessage);
         messages.Add(toolMessage);
     }
@@ -320,9 +320,7 @@ public class MemoryPipelineChatReducer : IChatReducer
     private void InjectMemories(
         List<ChatMessage> systemMessages,
         List<ChatMessage> memoryMessages,
-        ArchiveResult? archiveResult,
-        ChatMessage? existingRecentMemory,
-        ChatMessage? existingPrimaryMemory)
+        ArchiveResult? archiveResult)
     {
         string? recentMemory;
         string? primaryMemory;
@@ -331,14 +329,6 @@ public class MemoryPipelineChatReducer : IChatReducer
         {
             recentMemory = archiveResult.RecentMemory;
             primaryMemory = archiveResult.PrimaryMemory;
-        }
-        else if (existingRecentMemory is not null || existingPrimaryMemory is not null)
-        {
-            if (existingRecentMemory is not null)
-                systemMessages.Add(existingRecentMemory);
-            if (existingPrimaryMemory is not null)
-                systemMessages.Add(existingPrimaryMemory);
-            return;
         }
         else if (_archiver is not null)
         {

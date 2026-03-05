@@ -225,21 +225,29 @@ public class MainAgent
         AIContent? lastContent = null;
         AppLogger.SetStatus("AI 思考中...");
         _chatIO.BeginAiResponse();
+        var message = new ChatMessage { Role = ChatRole.Assistant };
+        bool cancelled = false;
         try
         {
-            var message = new ChatMessage();
             await foreach (var update in _agent.RunStreamingAsync(inputMessages, _session!).WithCancellation(aiToken))
             {
                 foreach (var content in update.Contents)
                 {
-                    var lc = message.Contents.LastOrDefault();
-                    if (lc != null && !lc.GetType().Equals(content.GetType()) || lc is FunctionCallContent || lc is FunctionResultContent)
+                    // 根据内容类型决定目标角色：FunctionResultContent → Tool，其余 → Assistant
+                    var expectedRole = content is FunctionResultContent
+                        ? ChatRole.Tool : ChatRole.Assistant;
+
+                    if (message.Contents.Count > 0 && message.Role != expectedRole)
                     {
-                        var c = message.Contents.Where(x => x is FunctionCallContent || x is FunctionResultContent || (x is TextContent text && text.Text.Length > 0) || (x is TextReasoningContent reasoning && reasoning.Text.Length > 0)).Count();
-                        if (c > 0)
-                            _reducer.WorkingMemoryBuffer.Add(message);
-                        message = new ChatMessage();
+                        // 角色切换：保存当前消息，开始新消息
+                        _reducer.WorkingMemoryBuffer.Add(message);
+                        message = new ChatMessage { Role = expectedRole };
                     }
+                    else if (message.Contents.Count == 0)
+                    {
+                        message.Role = expectedRole;
+                    }
+
                     switch (content)
                     {
                         case TextContent text:
@@ -278,10 +286,45 @@ public class MainAgent
         }
         catch (OperationCanceledException)
         {
+            cancelled = true;
             _chatIO.AppendChat("\n[已取消]\n");
-            return;
         }
-        _chatIO.AppendChat("\n");
+
+        // 将最后一条累积的消息加入工作记忆
+        if (message.Contents.Count > 0)
+            _reducer.WorkingMemoryBuffer.Add(message);
+
+        // 检查所有未返回结果的工具调用，补充取消标记
+        var allCallIds = _reducer.WorkingMemoryBuffer
+            .Where(m => m.Role == ChatRole.Assistant)
+            .SelectMany(m => m.Contents.OfType<FunctionCallContent>())
+            .Select(c => c.CallId)
+            .ToHashSet();
+
+        var answeredCallIds = _reducer.WorkingMemoryBuffer
+            .Where(m => m.Role == ChatRole.Tool)
+            .SelectMany(m => m.Contents.OfType<FunctionResultContent>())
+            .Select(r => r.CallId)
+            .ToHashSet();
+
+        allCallIds.ExceptWith(answeredCallIds);
+        if (allCallIds.Count > 0)
+        {
+            var unmatchedCalls = _reducer.WorkingMemoryBuffer
+                .Where(m => m.Role == ChatRole.Assistant)
+                .SelectMany(m => m.Contents.OfType<FunctionCallContent>())
+                .Where(c => allCallIds.Contains(c.CallId))
+                .ToList();
+
+            _reducer.WorkingMemoryBuffer.Add(new ChatMessage(ChatRole.Tool,
+                unmatchedCalls.Select(call => (AIContent)new FunctionResultContent(
+                    callId: call.CallId,
+                    result: "[已取消]"
+                )).ToList()));
+        }
+
+        if (!cancelled)
+            _chatIO.AppendChat("\n");
 
         // 持久化工作记忆
         try
