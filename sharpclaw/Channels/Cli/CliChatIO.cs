@@ -16,6 +16,17 @@ public sealed class CliChatIO : IChatIO
     private readonly CancellationTokenSource _stopCts = new();
     private readonly Channel<string> _inputChannel = Channel.CreateUnbounded<string>();
     private readonly Thread _inputThread;
+    private static readonly bool SupportsColor = !Console.IsOutputRedirected;
+
+    private static void SetColor(ConsoleColor color)
+    {
+        if (SupportsColor) Console.ForegroundColor = color;
+    }
+
+    private static void ResetColor()
+    {
+        if (SupportsColor) Console.ResetColor();
+    }
 
     public CliChatIO()
     {
@@ -45,7 +56,10 @@ public sealed class CliChatIO : IChatIO
     /// <inheritdoc/>
     public async Task<string> ReadInputAsync(CancellationToken cancellationToken = default)
     {
+        ResetColor();
+        SetColor(ConsoleColor.Cyan);
         Console.Write("> ");
+        ResetColor();
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken, _stopCts.Token);
         return await _inputChannel.Reader.ReadAsync(linked.Token);
@@ -63,12 +77,14 @@ public sealed class CliChatIO : IChatIO
 
         if (trimmed is "/help")
         {
+            SetColor(ConsoleColor.DarkGray);
             Console.WriteLine("""
                 内置指令：
                   /help    显示此帮助信息
                   /exit    退出程序
                   /quit    退出程序
                 """);
+            ResetColor();
             return Task.FromResult(CommandResult.Handled);
         }
 
@@ -84,6 +100,7 @@ public sealed class CliChatIO : IChatIO
     /// <inheritdoc/>
     public void BeginAiResponse()
     {
+        SetColor(ConsoleColor.Green);
         Console.Write("\nAI: ");
     }
 
@@ -102,8 +119,9 @@ public sealed class CliChatIO : IChatIO
     /// <inheritdoc/>
     public void ShowRunning()
     {
-        // CLI 模式不显示 spinner，AI 回复时直接开始输出
+        SetColor(ConsoleColor.DarkYellow);
         Console.Write("\n思考中...");
+        ResetColor();
     }
 
     /// <inheritdoc/>
