@@ -1,11 +1,11 @@
-using Microsoft.Extensions.AI;
 using Microsoft.Agents.AI;
+using Microsoft.Extensions.AI;
+using sharpclaw.Chat;
+using sharpclaw.Memory;
+using sharpclaw.UI;
 using System.ComponentModel;
 using System.Text;
 using System.Text.Json;
-
-using sharpclaw.Memory;
-using sharpclaw.UI;
 
 namespace sharpclaw.Agents;
 
@@ -15,10 +15,16 @@ namespace sharpclaw.Agents;
 /// </summary>
 public class MemorySaver
 {
+    internal const string AutoSaverKey = "__auto_saver__";
+
     private readonly IChatClient _client;
     private readonly IMemoryStore _memoryStore;
     private readonly AITool[] _fileTools;
     private readonly string _agentPrompt;
+
+    private readonly string _workingMemoryPath;
+    private readonly string _recentMemoryPath;
+    private readonly string _primaryMemoryPath;
 
     public MemorySaver(
         IChatClient baseClient,
@@ -31,6 +37,9 @@ public class MemorySaver
         _client = baseClient;
         _memoryStore = memoryStore;
         _fileTools = fileTools;
+        _workingMemoryPath = workingMemoryPath;
+        _recentMemoryPath = recentMemoryPath;
+        _primaryMemoryPath = primaryMemoryPath;
 
         _agentPrompt = @"你是系统的**长期记忆淬炼助手 (Long-term Memory Consolidation Assistant)**。
 **触发背景**：当前的对话上下文即将达到 Token 上限，早期的原始对话日志即将被永久裁剪。
@@ -66,7 +75,6 @@ public class MemorySaver
 
     public async Task SaveAsync(
         IReadOnlyList<ChatMessage> history,
-        string userInput,
         CancellationToken cancellationToken = default)
     {
         if (history.Count == 0)
@@ -156,18 +164,32 @@ public class MemorySaver
 
         // ── 构建输入 ──
 
-        var memoryCount = await _memoryStore.CountAsync(cancellationToken);
+        var messages = new List<ChatMessage>();
 
-        var sb2 = new StringBuilder();
-        sb2.AppendLine($"## 向量记忆库状态：已存 {memoryCount} 条");
-        sb2.AppendLine();
-        sb2.AppendLine("## 用户本轮输入");
-        sb2.AppendLine();
-        sb2.AppendLine(userInput);
-        sb2.AppendLine();
-        sb2.AppendLine("## 最近对话内容");
-        sb2.AppendLine();
-        sb2.Append(fullText);
+        var workingMemoryContent = ReadWorkingMemory() ?? "";
+        if (!string.IsNullOrWhiteSpace(workingMemoryContent))
+        {
+            var workingMemoryMessages = JsonSerializer.Deserialize<List<ChatMessage>>(workingMemoryContent);
+            if (workingMemoryMessages != null && workingMemoryMessages.Count > 0)
+                messages.AddRange(workingMemoryMessages);
+        }
+
+        if (messages.Count == 0)
+            return;
+
+        var primaryMemoryContent = ReadPrimaryMemory() ?? "";
+        if (!string.IsNullOrWhiteSpace(primaryMemoryContent))
+        {
+            messages.Add(new ChatMessage(ChatRole.User, "查询核心记忆"));
+            MemoryPipelineChatReducer.InjectFakeReadFile(messages, _primaryMemoryPath, primaryMemoryContent, AutoSaverKey);
+        }
+
+        var recentMemoryContent = ReadRecentMemory() ?? "";
+        if (!string.IsNullOrWhiteSpace(recentMemoryContent))
+        {
+            messages.Add(new ChatMessage(ChatRole.User, "查询记忆快照"));
+            MemoryPipelineChatReducer.InjectFakeReadFile(messages, _recentMemoryPath, recentMemoryContent, AutoSaverKey);
+        }
 
         AIFunction[] vectorTools =
         [
@@ -190,9 +212,29 @@ public class MemorySaver
         });
 
         await RunAgentStreamingAsync(agent,
-            new ChatMessage(ChatRole.User, sb2.ToString()),
+            [.. messages, new ChatMessage(ChatRole.User, "根据以上对话历史，写入或整理向量记忆。")],
             "MemorySaver", cancellationToken);
     }
+    private static string? ReadFile(string? path)
+    {
+        if (path is null || !File.Exists(path))
+            return null;
+        try
+        {
+            var content = File.ReadAllText(path);
+            return string.IsNullOrWhiteSpace(content) ? null : content;
+        }
+        catch { return null; }
+    }
+
+    /// <summary>读取工作记忆。</summary>
+    private string? ReadWorkingMemory() => ReadFile(_workingMemoryPath);
+
+    /// <summary>读取近期记忆。</summary>
+    private string? ReadRecentMemory() => ReadFile(_recentMemoryPath);
+
+    /// <summary>读取核心记忆。</summary>
+    private string? ReadPrimaryMemory() => ReadFile(_primaryMemoryPath);
 
     private static StringBuilder FormatMessages(IReadOnlyList<ChatMessage> messages, int? maxResultLength = null)
     {
@@ -235,11 +277,11 @@ public class MemorySaver
     }
 
     private static async Task RunAgentStreamingAsync(
-        ChatClientAgent agent, ChatMessage input, string logPrefix, CancellationToken cancellationToken)
+        ChatClientAgent agent, IEnumerable<ChatMessage> input, string logPrefix, CancellationToken cancellationToken)
     {
         var session = await agent.CreateSessionAsync();
 
-        await foreach (var update in agent.RunStreamingAsync([input], session).WithCancellation(cancellationToken))
+        await foreach (var update in agent.RunStreamingAsync(input, session).WithCancellation(cancellationToken))
         {
             foreach (var content in update.Contents)
             {

@@ -110,7 +110,7 @@ public class MemoryPipelineChatReducer : IChatReducer
 
         List<ChatMessage> allMessages = [.. OldWorkingMemoryContent, .. conversationMessages];
         var messageText = ConvertMessagesToText(allMessages).Replace(" ", "");
-        if (messageText.Length > 200000)
+        if (messageText.Length > 150000)
         {
             // 进入裁剪，清空累积的工作记忆
             OldWorkingMemoryContent.Clear();
@@ -122,7 +122,7 @@ public class MemoryPipelineChatReducer : IChatReducer
             {
                 try
                 {
-                    await _memorySaver.SaveAsync(conversationMessages, UserInput, cancellationToken);
+                    await _memorySaver.SaveAsync(allMessages, cancellationToken);
                 }
                 catch (Exception ex)
                 {
@@ -144,7 +144,7 @@ public class MemoryPipelineChatReducer : IChatReducer
             {
                 try
                 {
-                    archiveResult = await _archiver.ArchiveAsync(conversationMessages, cancellationToken);
+                    archiveResult = await _archiver.ArchiveAsync(allMessages, cancellationToken);
                 }
                 catch (Exception ex)
                 {

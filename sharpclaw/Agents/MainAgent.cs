@@ -343,6 +343,8 @@ public class MainAgent
         {
             AppLogger.Log($"[WorkingMemory] 保存失败: {ex.Message}");
         }
+
+        _chatIO.ShowStop();
     }
 
     private static AIFunction[] CreateMemoryTools(IMemoryStore memoryStore)
