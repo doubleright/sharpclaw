@@ -6,6 +6,13 @@ using Terminal.Gui.ViewBase;
 using Terminal.Gui.Views;
 
 var command = args.Length > 0 ? args[0].ToLowerInvariant() : "";
+#if DEBUG
+Console.WriteLine($"[Debug] 启动参数: {string.Join(' ', args)} ");
+if (command.Length == 0) {
+    Console.WriteLine("[Debug] 未提供命令参数，默认进入cli。");
+    command = "cli";
+}
+#endif
 
 switch (command)
 {
@@ -21,6 +28,10 @@ switch (command)
 
     case "tui":
         RunTui(args);
+        return;
+
+    case "cli":
+        await RunCliAsync(args);
         return;
 
     case "config":
@@ -44,12 +55,44 @@ static void PrintHelp()
         用法: sharpclaw <命令> [选项]
 
         命令:
+          cli                              启动纯 CLI 对话模式（Fallback）
           tui                              启动 TUI 终端界面
           web [--address ADDR] [--port N]  启动 Web 服务
           qqbot                            启动 QQ Bot 服务
           config                           打开配置界面
           help                             显示帮助信息
         """);
+}
+
+static async Task RunCliAsync(string[] args)
+{
+    KeyStore.PasswordPrompt = ConsolePasswordPrompt;
+
+    // ── 配置检测 ──
+    if (!SharpclawConfig.Exists())
+    {
+        Console.WriteLine("[Config] 尚未找到配置文件，请先运行 'sharpclaw config' 完成配置。");
+        return;
+    }
+
+    // ── 初始化 ──
+    var bootstrap = AgentBootstrap.Initialize();
+
+    if (bootstrap.MemoryStore is null)
+        Console.WriteLine("[Config] 向量记忆已禁用，记忆压缩将使用总结模式");
+
+    Console.WriteLine("Sharpclaw CLI 模式（输入 /help 查看指令，/exit 退出）");
+    Console.WriteLine(new string('-', 48));
+
+    var chatIO = new sharpclaw.Channels.Cli.CliChatIO();
+    var agent = new sharpclaw.Agents.MainAgent(
+        bootstrap.Config, bootstrap.MemoryStore, bootstrap.CommandSkills,
+        chatIO: chatIO, bootstrap.AgentContext);
+
+    await agent.RunAsync();
+
+    Console.WriteLine("\n[Cli] 已退出。");
+    bootstrap.TaskManager.Dispose();
 }
 
 static void RunTui(string[] args)
