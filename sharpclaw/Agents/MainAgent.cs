@@ -122,9 +122,8 @@ public class MainAgent
         if (config.Agents.Summarizer.Enabled)
         {
             var archiverClient = ClientFactory.CreateAgentClient(config, config.Agents.Summarizer);
-            AITool[] archiverTools = [.. fileTools, .. memoryTools];
             archiver = new ConversationArchiver(
-                archiverClient, sessionDir, _workingMemoryPath, recentMemoryPath, primaryMemoryPath, archiverTools);
+                archiverClient, sessionDir, _workingMemoryPath, recentMemoryPath, primaryMemoryPath);
         }
 
         AITool[] tools = [.. memoryTools, .. commandSkills];
