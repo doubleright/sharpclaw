@@ -4,11 +4,11 @@
  - [ ] slnx加入类库，默认VS IDE支持(现在要Restore Build)，在最新IDE中做到，【0异常 0警告 0消息】的编译状态。
  - [ ] MainAgent在作为单例在注册在DI中复用，探究运行时热切换不同UI模式的可行性。
  - [ ] 遵循NET最佳实践,DI管控各Services组件生命周期,合理使用Singleton、Scoped、Transient。
-    - [ ] 引入ORM类库,方便用户持久化对话数据,并且可以在不同会话之间共享数据。
+    - [X] 引入ORM类库,方便用户持久化对话数据,并且可以在不同会话之间共享数据。
     - [ ] 规范日志Logging
     - [ ] 配置Options
  - [ ] 各Agent选择不同IChatClient实现,合理匹配不同Model的能力。
- - [ ] 增加Token计数功能,方便用户了解每次对话的Token使用情况。.
+ - [ ] 增加Token计数功能,方便用户了解每次对话的Token使用情况，开关控制是否显示。
  - [X] 增加PowerShell Core(pwsh.exe / 7.x)回退PowerShell(powershell.exe / 5.1)的功能
 
 ---
@@ -24,5 +24,5 @@
 ## 新增纯CLI兼容模式的Fallback支持
  - [X] 简单实现，意图是快速开发核心业务，规避其他UI配置实现复杂，并且更通用的环境下使用 
  - [X] 调整默认颜色输出,在CLI模式下使用不同的颜色区分用户输入和模型输出,提升可读性。
- - [ ] 实现Config指令,允许用户在CLI模式下动态调整配置参数,如切换模型、调整颜色等。
+ - [ ] 实现Config指令,允许用户在CLI模式下动态调整配置参数,如配置模型、调整颜色等。
  - [ ] 日志显示(借用Title输出 或者 BeginRuning时输出内容 )。
