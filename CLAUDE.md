@@ -18,16 +18,22 @@ The project consists of two main components:
 # Build everything (including sharc submodule)
 dotnet build
 
-# Run Sharpclaw in different modes
+# Run Sharpclaw (Web 宿主, 默认模式)
+dotnet run --project sharpclaw                              # 启动 Web 宿主 (含 WebSocket + 可选 QQBot)
+dotnet run --project sharpclaw web                          # 同上
+dotnet run --project sharpclaw web --address 0.0.0.0 --port 8080
+
+# CLI 客户端 (连接到 Web 宿主)
+dotnet run --project sharpclaw cli                          # 连接到默认 localhost:5000
+dotnet run --project sharpclaw cli --address 192.168.1.2 --port 8080
+
+# TUI 模式 (本地独立运行)
 dotnet run --project sharpclaw tui                          # TUI mode (Terminal.Gui)
 dotnet run --project sharpclaw config                       # Re-run config dialog
-dotnet run --project sharpclaw web                          # Web mode (WebSocket server)
-dotnet run --project sharpclaw web --address 0.0.0.0 --port 8080
-dotnet run --project sharpclaw qqbot                        # QQ Bot mode
 dotnet run --project sharpclaw help                         # Show usage info
 
-# First run of `tui` auto-launches the config dialog
-# Web and QQ Bot modes require config to exist already
+# Web 模式需要 config 已存在; CLI 需先启动 Web 宿主
+# TUI 首次运行时自动弹出配置对话框
 ```
 
 ### Sharc Submodule Commands
@@ -54,10 +60,16 @@ dotnet run -c Release --project sharpclaw/sharc/bench/Sharc.Comparisons -- --tie
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  Frontend Layer (Channels/)                                  │
-│  ├── Tui/ — Terminal.Gui v2 (ChatWindow, ConfigDialog)      │
-│  ├── Web/ — ASP.NET Core WebSocket server                   │
-│  └── QQBot/ — QQ Bot integration (Luolan.QQBot)             │
+│  Web 宿主 (ASP.NET Core, 默认启动模式)                        │
+│  ├── /    → Web UI (index.html)                             │
+│  ├── /ws  → WebSocket 端点 (多客户端)                        │
+│  │         ├── Web UI 浏览器客户端                            │
+│  │         └── CLI 终端客户端 (CliClient)                     │
+│  └── QQBotHostedService (IHostedService, 可选)               │
+├─────────────────────────────────────────────────────────────┤
+│  独立模式                                                     │
+│  ├── Tui/ — Terminal.Gui v2 (本地运行, ChatWindow)           │
+│  └── Cli/ — CliClient (WebSocket 客户端, 连接到 Web 宿主)     │
 ├─────────────────────────────────────────────────────────────┤
 │  Agent Layer (Agents/)                                       │
 │  ├── MainAgent — Conversation loop, tool orchestration      │
@@ -114,11 +126,13 @@ Sharpclaw implements a sophisticated three-layer memory pipeline:
 ### IChatIO Abstraction
 
 The AI engine is decoupled from frontend through `Abstractions/IChatIO.cs`:
-- `Channels/Tui/ChatWindow.cs` — Terminal.Gui v2 interface
-- `Channels/Web/WebSocketChatIO.cs` — WebSocket frontend
-- `Channels/QQBot/QQBotServer.cs` — QQ Bot interface
+- `Channels/Tui/ChatWindow.cs` — Terminal.Gui v2 interface (本地模式)
+- `Channels/Web/WebSocketChatIO.cs` — WebSocket frontend (Web 宿主内)
+- `Channels/QQBot/QQBotChatIO.cs` — QQ Bot interface (Web 宿主内托管服务)
+- `Channels/Cli/CliClient.cs` — CLI WebSocket 客户端 (连接到 Web 宿主)
 
-All frontends share the same `MainAgent` logic.
+Web 宿主内的前端 (Web UI / QQBot) 通过 IChatIO 共享 `MainAgent` 逻辑。
+CLI 通过 WebSocket 协议与 Web 宿主通信，不直接使用 IChatIO。
 
 ### Skills System
 
@@ -188,11 +202,11 @@ sharpclaw/
 ├── README.md / README_CN.md     ← User-facing documentation
 ├── sharpclaw.slnx               ← Solution file
 ├── sharpclaw/                   ← Main project
-│   ├── Program.cs               ← Entry point (tui/web/qqbot/config)
+│   ├── Program.cs               ← Entry point (web/cli/tui/config)
 │   ├── sharpclaw.csproj         ← Project file (net10.0)
 │   ├── Abstractions/            ← IChatIO, IAppLogger interfaces
 │   ├── Agents/                  ← MainAgent, MemorySaver, ConversationArchiver
-│   ├── Channels/                ← Tui, Web, QQBot frontends
+│   ├── Channels/                ← Web(宿主), Cli(WS客户端), Tui(本地), QQBot(托管服务)
 │   ├── Chat/                    ← MemoryPipelineChatReducer
 │   ├── Clients/                 ─ DashScopeRerankClient, ExtraFieldsPolicy
 │   ├── Commands/                ← All tool implementations
@@ -240,7 +254,7 @@ sharpclaw/
 - **Target Framework**: .NET 10 (`net10.0`)
 - **Test Status**: No test project in main sharpclaw (sharc has 3,467 tests)
 - **Memory System**: Vector store with semantic deduplication (cosine distance 0.15 threshold)
-- **Channels**: TUI, Web, QQBot all functional
+- **Channels**: Web (base host) + QQBot (embedded hosted service) + CLI (WS client) + TUI (local)
 - **Config Version**: 8 (with auto-migration)
 
 ---
@@ -285,8 +299,11 @@ When working with this codebase:
 ## Quick Reference
 
 ```bash
-# Build and run TUI
-dotnet build && dotnet run --project sharpclaw tui
+# Build and run Web host (default)
+dotnet build && dotnet run --project sharpclaw
+
+# Run CLI client (connects to Web host)
+dotnet run --project sharpclaw cli
 
 # Run sharc tests
 dotnet test sharpclaw/sharc

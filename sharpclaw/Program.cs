@@ -8,36 +8,29 @@ using Terminal.Gui.Views;
 var command = args.Length > 0 ? args[0].ToLowerInvariant() : "";
 
 #if DEBUG 
-// 调试模式下如果没有提供命令参数，默认进入 cli 模式，方便调试和开发。
-// 生产环境下则要求明确指定命令，避免误操作，兼容以往无参退出体验。
-// 如果作为Fallback使用，建议在生产环境中也生效，默认命令为 cli，以保持一致的用户体验。
+// 调试模式下如果没有提供命令参数，默认启动 Web 宿主，方便调试和开发。
 if (command.Length == 0)
 {
-    Console.WriteLine("[Debug] 未提供命令参数，默认进入cli。");
-    command = "cli";
+    Console.WriteLine("[Debug] 未提供命令参数，默认启动 Web 宿主。");
+    command = "web";
 }
 else 
     Console.WriteLine($"[Debug] 启动参数: {string.Join(' ', args)} ");
 #endif
 
-    switch (command)
+switch (command)
 {
-    case "web":
+    case "" or "web":
         KeyStore.PasswordPrompt = ConsolePasswordPrompt;
-        await sharpclaw.Channels.Web.WebServer.RunAsync(args);
+        await RunWebAsync(args);
         return;
 
-    case "qqbot":
-        KeyStore.PasswordPrompt = ConsolePasswordPrompt;
-        await sharpclaw.Channels.QQBot.QQBotServer.RunAsync(args);
+    case "cli":
+        await RunCliClientAsync(args);
         return;
 
     case "tui":
         RunTui(args);
-        return;
-
-    case "cli":
-        await RunCliAsync(args);
         return;
 
     case "config":
@@ -61,45 +54,67 @@ static void PrintHelp()
         用法: sharpclaw <命令> [选项]
 
         命令:
-          cli                              启动纯 CLI 对话模式（Fallback）
-          tui                              启动 TUI 终端界面
-          web [--address ADDR] [--port N]  启动 Web 服务
-          qqbot                            启动 QQ Bot 服务
-          config                           打开配置界面
-          help                             显示帮助信息
+          (默认)                            启动 Web 宿主（含 WebSocket + 可选 QQBot）
+          web [--address ADDR] [--port N]   启动 Web 宿主（同上）
+          cli [--address ADDR] [--port N]   以 CLI 终端连接到 Web 宿主
+          tui                               启动 TUI 终端界面（本地模式）
+          config                            打开配置界面
+          help                              显示帮助信息
         """);
 }
 
-static async Task RunCliAsync(string[] args)
+/// <summary>
+/// 启动 Web 宿主：初始化 AgentBootstrap，启动 ASP.NET Core WebApp。
+/// 如果 QQBot 配置启用，会自动注册为托管服务随 Web 一同启动。
+/// </summary>
+static async Task RunWebAsync(string[] args)
 {
-    KeyStore.PasswordPrompt = ConsolePasswordPrompt;
-
     // ── 配置检测 ──
     if (!SharpclawConfig.Exists())
     {
-        Console.WriteLine("[Config] 尚未找到配置文件，请先运行 'sharpclaw config' 完成配置。");
+        Console.WriteLine("[Error] 配置文件不存在，请先运行 'sharpclaw config' 完成配置。");
         return;
     }
 
-    // ── 初始化 ──
     var bootstrap = AgentBootstrap.Initialize();
 
-    if (bootstrap.MemoryStore is null)
-        Console.WriteLine("[Config] 向量记忆已禁用，记忆压缩将使用总结模式");
+    await sharpclaw.Channels.Web.WebServer.RunAsync(args, bootstrap);
+}
 
-    Console.WriteLine("Sharpclaw CLI 模式（输入 /help 查看指令，/exit 退出）");
-    Console.WriteLine(new string('-', 48));
+/// <summary>
+/// CLI WebSocket 客户端模式：连接到正在运行的 Web 宿主。
+/// </summary>
+static async Task RunCliClientAsync(string[] args)
+{
+    // 解析连接参数
+    var address = "localhost";
+    var port = 5000;
 
-    var chatIO = new sharpclaw.Channels.Cli.CliChatIO();
-    AppLogger.SetInstance(new sharpclaw.Channels.Cli.CliAppLogger(chatIO));
-    var agent = new sharpclaw.Agents.MainAgent(
-        bootstrap.Config, bootstrap.MemoryStore, bootstrap.CommandSkills,
-        chatIO: chatIO, bootstrap.AgentContext);
+    // 尝试从配置文件读取 Web 地址和端口
+    if (SharpclawConfig.Exists())
+    {
+        try
+        {
+            KeyStore.PasswordPrompt = _ => null; // CLI 客户端不需要交互式密码
+            var config = SharpclawConfig.Load();
+            address = config.Channels.Web.ListenAddress;
+            port = config.Channels.Web.Port;
+        }
+        catch { }
+    }
 
-    await agent.RunAsync();
+    // 命令行参数覆盖
+    var addrIdx = Array.IndexOf(args, "--address");
+    if (addrIdx >= 0 && addrIdx + 1 < args.Length)
+        address = args[addrIdx + 1];
+    var portIdx = Array.IndexOf(args, "--port");
+    if (portIdx >= 0 && portIdx + 1 < args.Length && int.TryParse(args[portIdx + 1], out var p))
+        port = p;
 
-    Console.WriteLine("\n[Cli] 已退出。");
-    bootstrap.TaskManager.Dispose();
+    var serverUrl = $"ws://{address}:{port}/ws";
+
+    using var client = new sharpclaw.Channels.Cli.CliClient(serverUrl);
+    await client.RunAsync();
 }
 
 static void RunTui(string[] args)
