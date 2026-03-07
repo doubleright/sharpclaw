@@ -214,6 +214,7 @@ function handleMessage(msg) {
 
         case 'running':
             setInputState(false);
+            if (!statusText.textContent) statusText.textContent = '思考中...';
             break;
 
         case 'inputReady':
