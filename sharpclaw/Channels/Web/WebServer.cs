@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Serilog;
 using sharpclaw.Core;
 using sharpclaw.UI;
 
@@ -32,16 +33,30 @@ public static class WebServer
             port = p;
 
         if (bootstrap.MemoryStore is null && !silent)
-            Console.WriteLine("[Config] 向量记忆已禁用，记忆压缩将使用总结模式");
+            Log.Information("[Config] 向量记忆已禁用，记忆压缩将使用总结模式");
 
         var builder = WebApplication.CreateSlimBuilder();
         builder.WebHost.UseUrls($"http://{address}:{port}");
 
-        // silent 模式下完全禁止控制台日志输出
+        // 配置 Serilog 日志记录到文件 ~/.sharpclaw/web.log
+        var logFile = Path.Combine(SharpclawConfig.SharpclawDir, "web.log");
+        var loggerConfig = new LoggerConfiguration()
+            .MinimumLevel.Information()
+            .WriteTo.File(logFile, rollingInterval: RollingInterval.Day,
+                outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] {Message:lj}{NewLine}{Exception}");
+
+        if (!silent)
+        {
+            loggerConfig.WriteTo.Console();
+        }
+
+        Log.Logger = loggerConfig.CreateLogger();
+        builder.Host.UseSerilog();
+
+        // silent 模式下不静默 File Sink，但清除默认 Console Providers 以防万一
         if (silent)
         {
             builder.Logging.ClearProviders();
-            builder.Logging.SetMinimumLevel(LogLevel.None);
         }
 
         // 如果 QQBot 配置启用，注册为托管服务
@@ -52,11 +67,11 @@ public static class WebServer
             {
                 builder.Services.AddSingleton(new QQBot.QQBotHostedService(bootstrap));
                 builder.Services.AddHostedService(sp => sp.GetRequiredService<QQBot.QQBotHostedService>());
-                if (!silent) Console.WriteLine("[QQBot] QQ Bot 已注册为托管服务，将随 Web 宿主一同启动");
+                if (!silent) Log.Information("[QQBot] QQ Bot 已注册为托管服务，将随 Web 宿主一同启动");
             }
             else
             {
-                if (!silent) Console.WriteLine("[QQBot] QQ Bot 已启用但 AppId 或 ClientSecret 未配置，跳过注册。");
+                if (!silent) Log.Information("[QQBot] QQ Bot 已启用但 AppId 或 ClientSecret 未配置，跳过注册。");
             }
         }
 
@@ -90,7 +105,7 @@ public static class WebServer
                 return;
             }
 
-            Console.WriteLine($"[WebSocket] 客户端已连接: {context.Connection.RemoteIpAddress}");
+            Log.Information($"[WebSocket] 客户端已连接: {context.Connection.RemoteIpAddress}");
 
             await using var sender = new WebSocketSender(ws);
             await using var chatIO = new WebSocketChatIO(sender);
@@ -113,7 +128,7 @@ public static class WebServer
             catch (OperationCanceledException) { }
             catch (Exception ex)
             {
-                Console.WriteLine($"[WebSocket] Agent 异常: {ex.Message}");
+                Log.Information($"[WebSocket] Agent 异常: {ex.Message}");
             }
 
             if (ws.State == WebSocketState.Open)
@@ -121,11 +136,11 @@ public static class WebServer
                 await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", CancellationToken.None);
             }
 
-            Console.WriteLine("[WebSocket] 客户端已断开");
+            Log.Information("[WebSocket] 客户端已断开");
         });
 
-        Console.WriteLine($"Sharpclaw Web 服务已启动: http://{address}:{port}");
-        Console.WriteLine("按 Ctrl+C 停止");
+        Log.Information($"Sharpclaw Web 服务已启动: http://{address}:{port}");
+        Log.Information("按 Ctrl+C 停止");
 
         await app.RunAsync();
 
