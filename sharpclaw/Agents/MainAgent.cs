@@ -4,10 +4,12 @@ using sharpclaw.Abstractions;
 using sharpclaw.Chat;
 using sharpclaw.Core;
 using sharpclaw.Memory;
+using sharpclaw.Services;
 using sharpclaw.UI;
 using System.ComponentModel;
 using System.Text;
 using System.Text.Json;
+using Terminal.Gui.Drawing;
 using static System.Net.Mime.MediaTypeNames;
 
 namespace sharpclaw.Agents;
@@ -27,18 +29,17 @@ public class MainAgent
 
 🔍 **操作准则 (When Taking Actions)**
 当你需要操作文件或执行系统命令时：
-1. **先了解再行动**：对不熟悉的目录或文件，先用 `CommandDir` 或 `GlobFiles` 探查结构。如果记忆中已有足够信息，直接行动。
-2. **读后再改**：修改文件前，先用 `ReadFile` 读取最新内容，从中精确复制要修改的文本作为 `EditByMatch` 的 oldString。
-3. **评估影响**：修改公共接口或关键文件前，用 `Grep` 搜索相关引用，评估连带影响。
+1. **先了解再行动**：对不熟悉的目录或文件，先探查结构。如果记忆中已有足够信息，直接行动。
+2. **读后再改**：修改文件前，先读取最新内容，再修改。
+3. **评估影响**：修改公共接口或关键文件前，搜索相关引用，评估连带影响。
 4. **技能自省**：用户询问你的能力时，查阅实际的工具列表如实汇报，不虚构不存在的功能。
 
 🚀 **自主执行准则 (Autonomous Execution)**
 1. **目标拆解**：复杂任务主动拆分为子步骤，连续推进，不要每步都停下来问用户。
 2. **自我纠错**：工具调用失败时，独立分析原因并重试 2~3 次，而非立即报错。
-3. **验证闭环**：编辑文件后检查 Diff 预览，发现问题立即修复。
+3. **验证闭环**：编辑文件后需要进行检查，发现问题立即修复。
 
 🧠 **记忆系统**
-- **优先查阅记忆**：行动前先检索上下文或调用 `SearchMemory` / `GetRecentMemories`，避免重复探索。
 - **隐式记忆**：系统在后台自动提取并注入历史上下文，你无需手动保存。
 - **断点续传**：长任务中随时对齐宏观进度，防止迷失方向。
 
@@ -136,6 +137,9 @@ public class MainAgent
             archiver: _archiver,
             memorySaver: memorySaver);
 
+        var pythonService = new PythonService();
+        pythonService.Init();
+
         _agent = new ChatClientBuilder(mainClient)
             .UseFunctionInvocation()
             .UseChatReducer(_reducer)
@@ -144,7 +148,7 @@ public class MainAgent
                 ChatOptions = new ChatOptions
                 {
                     Instructions = systemPrompt,
-                    Tools = tools
+                    Tools = [AIFunctionFactory.Create(pythonService.RunPython)]
                 }
             });
     }
@@ -279,6 +283,15 @@ public class MainAgent
                             break;
                         case FunctionCallContent call:
                             message.Contents.Add(call);
+                            if (call.Name == nameof(PythonService.RunPython) && call.Arguments != null)
+                            {
+                                if (call.Arguments.TryGetValue("purpose", out var purpose))
+                                {
+                                    AppLogger.SetStatus($"[Main]: {purpose}");
+                                    AppLogger.Log($"[Main]: {purpose}");
+                                    break;
+                                }
+                            }
                             AppLogger.SetStatus($"[Main]调用工具: {call.Name}");
                             AppLogger.Log($"[Main]调用工具: {call.Name}");
                             break;
