@@ -211,6 +211,10 @@ public class MemorySaver
             ChatOptions = options
         });
 
+        var aiContents = messages.SelectMany(x => x.Contents).ToList();
+        if (aiContents.Count(x => x is FunctionCallContent) != aiContents.Count(x => x is FunctionResultContent))
+            return;
+
         await RunAgentStreamingAsync(agent,
             [.. messages, new ChatMessage(ChatRole.User, "根据以上对话历史，写入或整理向量记忆。")],
             "MemorySaver", cancellationToken);

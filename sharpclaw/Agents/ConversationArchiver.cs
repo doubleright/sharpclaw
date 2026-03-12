@@ -119,26 +119,20 @@ public class ConversationArchiver
         CancellationToken cancellationToken = default)
     {
         if (trimmedMessages.Count == 0)
-            return new ArchiveResult(ReadFile(_recentMemoryPath), ReadFile(_primaryMemoryPath));
+            return new ArchiveResult(false, ReadFile(_recentMemoryPath), ReadFile(_primaryMemoryPath));
 
         // 摘要 Agent 读取工作记忆并生成摘要
-        await SummarizeAsync(cancellationToken);
+        var success = await SummarizeAsync(cancellationToken);
 
         // 检查近期记忆是否溢出，溢出则巩固 Agent 提炼到核心记忆
         var recentMemory = ReadFile(_recentMemoryPath) ?? "";
         if (recentMemory.Length > RecentMemoryMaxLength)
         {
-            try
-            {
-                await ConsolidateAsync(recentMemory, cancellationToken);
-            }
-            catch (Exception ex)
-            {
-                AppLogger.Log($"[Archive] 记忆巩固失败: {ex.Message}");
-            }
+            success = await ConsolidateAsync(recentMemory, cancellationToken);
         }
 
         return new ArchiveResult(
+            success,
             ReadFile(_recentMemoryPath),
             ReadFile(_primaryMemoryPath));
     }
@@ -154,7 +148,7 @@ public class ConversationArchiver
 
     #region 第一层：摘要 Agent
 
-    private async Task SummarizeAsync(CancellationToken cancellationToken)
+    private async Task<bool> SummarizeAsync(CancellationToken cancellationToken)
     {
         try
         {
@@ -171,7 +165,7 @@ public class ConversationArchiver
             }
 
             if (messages.Count == 0)
-                return;
+                return false;
 
             var primaryMemoryContent = ReadPrimaryMemory() ?? "";
             if (!string.IsNullOrWhiteSpace(primaryMemoryContent))
@@ -186,6 +180,11 @@ public class ConversationArchiver
                 messages.Add(new ChatMessage(ChatRole.User, "查询原来的记忆快照"));
                 MemoryPipelineChatReducer.InjectFakeReadFile(messages, _recentMemoryPath, recentMemoryContent, AutoSummaryKey);
             }
+
+            var aiContents = messages.SelectMany(x => x.Contents).ToList();
+            if (aiContents.Count(x => x is FunctionCallContent) != aiContents.Count(x => x is FunctionResultContent))
+                return false;
+
             var ret = await _client.AsAIAgent(_summarizerPrompt).RunAsync([.. messages, new ChatMessage(ChatRole.User, "根据以上对话历史，生成完成的记忆快照。")], cancellationToken: cancellationToken);
             if (!string.IsNullOrWhiteSpace(ret.Text))
             {
@@ -196,48 +195,61 @@ public class ConversationArchiver
         {
             AppLogger.Log($"[Archive] 摘要生成失败: {ex.Message}");
         }
+        return true;
     }
 
     #endregion
 
     #region 第二层：巩固 Agent
 
-    private async Task ConsolidateAsync(string recentMemory, CancellationToken cancellationToken)
+    private async Task<bool> ConsolidateAsync(string recentMemory, CancellationToken cancellationToken)
     {
-        AppLogger.SetStatus("巩固核心记忆...");
-
-        var messages = new List<ChatMessage>();
-
-        var workingMemoryContent = ReadWorkingMemory() ?? "";
-        if (!string.IsNullOrWhiteSpace(workingMemoryContent))
+        try
         {
-            var workingMemoryMessages = JsonSerializer.Deserialize<List<ChatMessage>>(workingMemoryContent);
-            if (workingMemoryMessages != null && workingMemoryMessages.Count > 0)
-                messages.AddRange(workingMemoryMessages);
+            AppLogger.SetStatus("巩固核心记忆...");
+
+            var messages = new List<ChatMessage>();
+
+            var workingMemoryContent = ReadWorkingMemory() ?? "";
+            if (!string.IsNullOrWhiteSpace(workingMemoryContent))
+            {
+                var workingMemoryMessages = JsonSerializer.Deserialize<List<ChatMessage>>(workingMemoryContent);
+                if (workingMemoryMessages != null && workingMemoryMessages.Count > 0)
+                    messages.AddRange(workingMemoryMessages);
+            }
+
+            if (messages.Count == 0)
+                return false;
+
+            var primaryMemoryContent = ReadPrimaryMemory() ?? "";
+            if (!string.IsNullOrWhiteSpace(primaryMemoryContent))
+            {
+                messages.Add(new ChatMessage(ChatRole.User, "查询核心记忆"));
+                MemoryPipelineChatReducer.InjectFakeReadFile(messages, _primaryMemoryPath, primaryMemoryContent, AutoSummaryKey);
+            }
+
+            var recentMemoryContent = ReadRecentMemory() ?? "";
+            if (!string.IsNullOrWhiteSpace(recentMemoryContent))
+            {
+                messages.Add(new ChatMessage(ChatRole.User, "查询记忆快照"));
+                MemoryPipelineChatReducer.InjectFakeReadFile(messages, _recentMemoryPath, recentMemoryContent, AutoSummaryKey);
+            }
+
+            var aiContents = messages.SelectMany(x => x.Contents).ToList();
+            if (aiContents.Count(x => x is FunctionCallContent) != aiContents.Count(x => x is FunctionResultContent))
+                return false;
+
+            var ret = await _client.AsAIAgent(_consolidatorPrompt).RunAsync([.. messages, new ChatMessage(ChatRole.User, "根据以上对话历史，生成完成的核心记忆。")], cancellationToken: cancellationToken);
+            if (!string.IsNullOrWhiteSpace(ret.Text))
+            {
+                File.WriteAllText(_primaryMemoryPath, ret.Text);
+            }
         }
-
-        if (messages.Count == 0)
-            return;
-
-        var primaryMemoryContent = ReadPrimaryMemory() ?? "";
-        if (!string.IsNullOrWhiteSpace(primaryMemoryContent))
+        catch (Exception ex)
         {
-            messages.Add(new ChatMessage(ChatRole.User, "查询核心记忆"));
-            MemoryPipelineChatReducer.InjectFakeReadFile(messages, _primaryMemoryPath, primaryMemoryContent, AutoSummaryKey);
+            AppLogger.Log($"[Archive] 记忆巩固失败: {ex.Message}");
         }
-
-        var recentMemoryContent = ReadRecentMemory() ?? "";
-        if (!string.IsNullOrWhiteSpace(recentMemoryContent))
-        {
-            messages.Add(new ChatMessage(ChatRole.User, "查询记忆快照"));
-            MemoryPipelineChatReducer.InjectFakeReadFile(messages, _recentMemoryPath, recentMemoryContent, AutoSummaryKey);
-        }
-
-        var ret = await _client.AsAIAgent(_consolidatorPrompt).RunAsync([.. messages, new ChatMessage(ChatRole.User, "根据以上对话历史，生成完成的核心记忆。")], cancellationToken: cancellationToken);
-        if (!string.IsNullOrWhiteSpace(ret.Text))
-        {
-            File.WriteAllText(_primaryMemoryPath, ret.Text);
-        }
+        return true;
     }
 
     #endregion
@@ -260,4 +272,4 @@ public class ConversationArchiver
 }
 
 /// <summary>归档结果：近期记忆和核心记忆的当前内容。</summary>
-public record ArchiveResult(string? RecentMemory, string? PrimaryMemory);
+public record ArchiveResult(bool Success, string? RecentMemory, string? PrimaryMemory);

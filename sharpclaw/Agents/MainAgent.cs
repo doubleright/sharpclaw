@@ -53,6 +53,7 @@ public class MainAgent
     private readonly MemoryPipelineChatReducer _reducer;
     private readonly IAgentContext _agentContext;
     private AgentSession? _session;
+    private ConversationArchiver? _archiver = null;
 
     public MainAgent(
         SharpclawConfig config,
@@ -118,11 +119,10 @@ public class MainAgent
             memoryTools = CreateMemoryTools(memoryStore);
         }
 
-        ConversationArchiver? archiver = null;
         if (config.Agents.Summarizer.Enabled)
         {
             var archiverClient = ClientFactory.CreateAgentClient(config, config.Agents.Summarizer);
-            archiver = new ConversationArchiver(
+            _archiver = new ConversationArchiver(
                 archiverClient, sessionDir, _workingMemoryPath, recentMemoryPath, primaryMemoryPath);
         }
 
@@ -133,7 +133,7 @@ public class MainAgent
             agentContext,
             resetThreshold: 30,
             systemPrompt: systemPrompt,
-            archiver: archiver,
+            archiver: _archiver,
             memorySaver: memorySaver);
 
         _agent = new ChatClientBuilder(mainClient)
@@ -337,7 +337,21 @@ public class MainAgent
         // 持久化工作记忆
         try
         {
-            File.WriteAllText(_workingMemoryPath, JsonSerializer.Serialize(_reducer.WorkingMemoryBuffer));
+            List<ChatMessage> allMessage = [.. _reducer.OldWorkingMemoryContent, .. _reducer.WorkingMemoryBuffer];
+            File.WriteAllText(_workingMemoryPath, JsonSerializer.Serialize(allMessage));
+            var messageText = MemoryPipelineChatReducer.ConvertMessagesToText(allMessage).Replace(" ", "");
+            if (messageText.Length > 150000)
+            {
+                try
+                {
+                    if (_archiver is not null)
+                        await _archiver.ArchiveAsync(_reducer.WorkingMemoryBuffer, cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    AppLogger.Log($"[Archive] 归档失败: {ex.Message}");
+                }
+            }
         }
         catch (Exception ex)
         {
