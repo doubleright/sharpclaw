@@ -15,14 +15,17 @@ public class PythonService : IDisposable
     private string? _pythonPath;
     private bool _isInitialized;
     private readonly SemaphoreSlim _lock = new(1, 1);
+    private string? _workingDirectory = null;
 
     /// <summary>
     /// 初始化 Python 服务（查找 Python 路径）
     /// </summary>
-    public void Init()
+    public void Init(string workingDirectory)
     {
         if (_isInitialized)
             return;
+
+        _workingDirectory = workingDirectory;
 
         _pythonPath = FindPythonPath();
 
@@ -47,7 +50,7 @@ public class PythonService : IDisposable
         if (string.IsNullOrWhiteSpace(code))
             return "ERROR: empty code";
 
-        var result = ExecutePythonInternal(code, workingDirectory);
+        var result = ExecutePythonInternal(code, _workingDirectory ?? workingDirectory);
 
         if (result.success)
         {

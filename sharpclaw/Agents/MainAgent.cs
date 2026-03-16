@@ -138,7 +138,7 @@ public class MainAgent
             memorySaver: memorySaver);
 
         var pythonService = new PythonService();
-        pythonService.Init();
+        pythonService.Init(_agentContext.GetWorkspaceDirPath());
 
         _agent = new ChatClientBuilder(mainClient)
             .UseFunctionInvocation()
