@@ -18,15 +18,15 @@ namespace sharpclaw.Commands;
 public abstract class CommandBase
 {
     protected readonly TaskManager TaskManager;
-    private readonly IAgentContext _agentContext;
+    protected readonly IAgentContext AgentContext;
 
     protected CommandBase(TaskManager taskManager, IAgentContext agentContext)
     {
         TaskManager = taskManager;
-        _agentContext = agentContext;
+        AgentContext = agentContext;
     }
 
-    protected string GetDefaultWorkspace() => _agentContext.GetWorkspaceDirPath();
+    protected string GetDefaultWorkspace() => AgentContext.GetWorkspaceDirPath();
 
     protected string Serialize(object obj) => JsonSerializer.Serialize(obj);
 

@@ -108,6 +108,19 @@ public class MainAgent
         };
         var fileTools = commandSkills.Where(t => fileToolNames.Contains(t.Name)).ToArray();
 
+        var taskToolNames = new HashSet<string>
+        {
+            "TaskGetStatus",
+            "TaskRead",
+            "TaskWait",
+            "TaskTerminate",
+            "TaskList",
+            "TaskRemove",
+            "TaskWriteStdin",
+            "TaskCloseStdin"
+        };
+        var taskTools = commandSkills.Where(t => taskToolNames.Contains(t.Name)).ToArray();
+
         if (memoryStore is not null)
         {
             if (config.Agents.Saver.Enabled)
@@ -137,8 +150,8 @@ public class MainAgent
             archiver: _archiver,
             memorySaver: memorySaver);
 
-        var pythonService = new PythonService();
-        pythonService.Init(_agentContext.GetWorkspaceDirPath());
+        var pythonService = new PythonService(agentContext);
+        pythonService.Init();
 
         _agent = new ChatClientBuilder(mainClient)
             .UseFunctionInvocation()
@@ -148,7 +161,7 @@ public class MainAgent
                 ChatOptions = new ChatOptions
                 {
                     Instructions = systemPrompt,
-                    Tools = [AIFunctionFactory.Create(pythonService.RunPython)]
+                    Tools = [.. taskTools, AIFunctionFactory.Create(pythonService.RunPython)]
                 }
             });
     }

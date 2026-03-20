@@ -23,7 +23,7 @@ public static class AgentBootstrap
     {
         var config = SharpclawConfig.Load();
         var taskManager = new TaskManager();
-        var agentContext = new AgentContext();
+        var agentContext = new AgentContext(taskManager);
 
         var systemCommands = new SystemCommands(taskManager, agentContext);
         var fileCommands = new FileCommands(taskManager, agentContext);

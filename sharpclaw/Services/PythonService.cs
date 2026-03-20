@@ -1,4 +1,7 @@
-﻿using System;
+﻿using sharpclaw.Commands;
+using sharpclaw.Core;
+using sharpclaw.Core.TaskManagement;
+using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
@@ -10,22 +13,26 @@ namespace sharpclaw.Services;
 /// Python 服务 - 直接通过 Process 调用 Python 执行代码
 /// 完全 AOT 兼容
 /// </summary>
-public class PythonService : IDisposable
+public class PythonService : CommandBase, IDisposable
 {
     private string? _pythonPath;
     private bool _isInitialized;
     private readonly SemaphoreSlim _lock = new(1, 1);
     private string? _workingDirectory = null;
 
+    public PythonService(IAgentContext agentContext) : base(agentContext.TaskManager, agentContext)
+    {
+    }
+
     /// <summary>
     /// 初始化 Python 服务（查找 Python 路径）
     /// </summary>
-    public void Init(string workingDirectory)
+    public void Init()
     {
         if (_isInitialized)
             return;
 
-        _workingDirectory = workingDirectory;
+        _workingDirectory = AgentContext.GetWorkspaceDirPath();
 
         _pythonPath = FindPythonPath();
 
@@ -45,29 +52,38 @@ public class PythonService : IDisposable
     public string RunPython(
         [Description("python代码，建议打印出字符串，方便接收信息")] string code,
         [Description("执行这个代码的目的，需要达成什么效果（必填）")] string purpose,
+        [Description("运行超时时间，单位：秒，默认：180秒 (选填)")] int timeOut = 180,
         [Description("Working directory (optional)")] string workingDirectory = "")
     {
-        if (string.IsNullOrWhiteSpace(code))
-            return "ERROR: empty code";
-
-        var result = ExecutePythonInternal(code, _workingDirectory ?? workingDirectory);
-
-        if (result.success)
+        return RunNative("RunPython", (ctx, ct) =>
         {
-            var sb = new StringBuilder();
-            if (!string.IsNullOrEmpty(result.data))
-                sb.Append(result.data);
-            if (!string.IsNullOrEmpty(result.error))
+            if (string.IsNullOrWhiteSpace(code))
             {
-                if (sb.Length > 0) sb.AppendLine();
-                sb.Append("STDERR:\n").Append(result.error);
+                ctx.WriteStderrLine("ERROR: empty code");
+                return Task.FromResult(1);
             }
-            return sb.Length == 0 ? "OK" : sb.ToString();
-        }
-        else
-        {
-            return $"ERROR: {result.pex}\n\nSTDERR:\n{result.error}";
-        }
+
+            var result = ExecutePythonInternal(code, _workingDirectory ?? workingDirectory);
+
+            if (result.success)
+            {
+                var sb = new StringBuilder();
+                if (!string.IsNullOrEmpty(result.data))
+                    sb.Append(result.data);
+                if (!string.IsNullOrEmpty(result.error))
+                {
+                    if (sb.Length > 0) sb.AppendLine();
+                    sb.Append("STDERR:\n").Append(result.error);
+                }
+                ctx.WriteStdoutLine(sb.Length == 0 ? "OK" : sb.ToString());
+                return Task.FromResult(0);
+            }
+            else
+            {
+                ctx.WriteStderrLine($"ERROR: {result.pex}\n\nSTDERR:\n{result.error}");
+                return Task.FromResult(1);
+            }
+        }, true, timeOut * 1000);
     }
 
     private (bool success, string data, string pex, string error) ExecutePythonInternal(string code, string workingDirectory)
