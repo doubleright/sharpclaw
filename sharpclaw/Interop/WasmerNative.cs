@@ -32,7 +32,7 @@ internal struct WasmValVec
 
 internal static class WasmerNative
 {
-    private const string LibraryName = "wasmer.dll";
+    internal const string LibraryName = "wasmer";
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern IntPtr wasm_engine_new();

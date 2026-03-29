@@ -35,8 +35,11 @@
 		<EmbeddedResource Include="wwwroot\index.html" LogicalName="index.html" />
 	</ItemGroup>
 
-	<ItemGroup>
+	<ItemGroup Condition="Exists('..\libs\wasmer-windows-amd64\lib\wasmer.dll')">
 		<None Include="..\libs\wasmer-windows-amd64\lib\wasmer.dll" Link="wasmer.dll" CopyToOutputDirectory="PreserveNewest" />
+	</ItemGroup>
+
+	<ItemGroup Condition="Exists('..\libs\rustpython.wasm')">
 		<None Include="..\libs\rustpython.wasm" Link="libs\rustpython.wasm" CopyToOutputDirectory="PreserveNewest" />
 	</ItemGroup>
 

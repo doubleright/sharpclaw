@@ -1,4 +1,6 @@
+using System.Reflection;
 using System.Runtime.InteropServices;
+using sharpclaw.Interop;
 
 namespace sharpclaw.Services;
 
@@ -23,6 +25,13 @@ public sealed class RustPythonWasmRunner : IRustPythonWasmRunner
     private readonly WasmerWasiRuntime _runtime = new();
     private string? _wasmPath;
     private bool _isInitialized;
+    private static IntPtr _wasmerHandle;
+    private static bool _resolverSet;
+
+    private static string WasmerLibraryFileName =>
+        OperatingSystem.IsWindows() ? "wasmer.dll" :
+        OperatingSystem.IsMacOS() ? "libwasmer.dylib" :
+        "libwasmer.so";
 
     public string WasmPath => _wasmPath ?? throw new InvalidOperationException("RustPython WASM 尚未初始化。");
 
@@ -31,14 +40,17 @@ public sealed class RustPythonWasmRunner : IRustPythonWasmRunner
         if (_isInitialized)
             return;
 
+        var libName = WasmerLibraryFileName;
         var wasmerPath = ResolveExistingFile(
-            Path.Combine(AppContext.BaseDirectory, "wasmer.dll"),
-            Path.Combine(AppContext.BaseDirectory, "libs", "wasmer-windows-amd64", "lib", "wasmer.dll"),
-            workspaceRoot is null ? string.Empty : Path.Combine(workspaceRoot, "libs", "wasmer-windows-amd64", "lib", "wasmer.dll"),
-            Path.Combine(Directory.GetCurrentDirectory(), "libs", "wasmer-windows-amd64", "lib", "wasmer.dll"));
+            Path.Combine(AppContext.BaseDirectory, libName),
+            Path.Combine(AppContext.BaseDirectory, "libs", "wasmer-windows-amd64", "lib", libName),
+            workspaceRoot is null ? string.Empty : Path.Combine(workspaceRoot, "libs", "wasmer-windows-amd64", "lib", libName),
+            workspaceRoot is null ? string.Empty : Path.Combine(workspaceRoot, "libs", libName),
+            Path.Combine(Directory.GetCurrentDirectory(), "libs", "wasmer-windows-amd64", "lib", libName),
+            Path.Combine(Directory.GetCurrentDirectory(), "libs", libName));
 
         if (wasmerPath is null)
-            throw new FileNotFoundException("未找到 Wasmer 原生库 wasmer.dll。");
+            throw new FileNotFoundException($"未找到 Wasmer 原生库 {libName}。");
 
         _wasmPath = ResolveExistingFile(
             Path.Combine(AppContext.BaseDirectory, "rustpython.wasm"),
@@ -49,7 +61,14 @@ public sealed class RustPythonWasmRunner : IRustPythonWasmRunner
         if (_wasmPath is null)
             throw new FileNotFoundException("未找到 rustpython.wasm。");
 
-        NativeLibrary.Load(wasmerPath);
+        _wasmerHandle = NativeLibrary.Load(wasmerPath);
+        if (!_resolverSet)
+        {
+            NativeLibrary.SetDllImportResolver(typeof(WasmerNative).Assembly, (name, _, _) =>
+                name == WasmerNative.LibraryName ? _wasmerHandle : IntPtr.Zero);
+            _resolverSet = true;
+        }
+
         _isInitialized = true;
     }
 
