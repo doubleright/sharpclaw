@@ -92,7 +92,7 @@ dotnet run -c Release --project sharpclaw/sharc/bench/Sharc.Comparisons -- --tie
 │  ├── AgentBootstrap — Shared initialization                 │
 │  ├── SharpclawConfig — Configuration with encryption        │
 │  ├── ClientFactory — LLM client creation                    │
-│  ├── DataProtector/KeyStore — AES-256-CBC encryption        │
+│  ├── DataProtector/KeyStore — AES-256-GCM encryption        │
 │  └── TaskManager — Background process management            │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -163,7 +163,7 @@ Configuration stored in `~/.sharpclaw/config.json` (version 8):
 }
 ```
 
-- **API keys** encrypted at rest with AES-256-CBC
+- **API keys** encrypted at rest with AES-256-GCM
 - **Encryption key** stored in OS credential manager (Windows/macOS/Linux)
 - **Per-agent overrides** can specify different provider/model from default
 - **ExtraRequestBody** supports custom fields (e.g., `thinking`, `reasoning_split`)
