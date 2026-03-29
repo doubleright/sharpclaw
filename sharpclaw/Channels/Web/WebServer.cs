@@ -3,6 +3,9 @@ using System.Reflection;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Serilog;
 using sharpclaw.Core;
 using sharpclaw.UI;
 
@@ -10,19 +13,15 @@ namespace sharpclaw.Channels.Web;
 
 /// <summary>
 /// ASP.NET Core WebSocket 服务主机。
+/// 作为整个 Sharpclaw 的基础宿主，承载 Web UI、WebSocket 端点和可选的 QQBot 服务。
 /// </summary>
 public static class WebServer
 {
-    public static async Task RunAsync(string[] args)
+    /// <summary>
+    /// 启动 Web 宿主。bootstrap 由外部提供，支持多客户端 WebSocket 连接。
+    /// </summary>
+    public static async Task RunAsync(string[] args, AgentBootstrap.BootstrapResult bootstrap, bool silent = false)
     {
-        if (!SharpclawConfig.Exists())
-        {
-            Console.WriteLine("[Error] 配置文件不存在，请先运行 TUI 模式完成配置：dotnet run --project sharpclaw config");
-            return;
-        }
-
-        var bootstrap = AgentBootstrap.Initialize();
-
         // 端口优先级：命令行参数 > 配置文件 > 默认值
         var address = bootstrap.Config.Channels.Web.ListenAddress;
         var port = bootstrap.Config.Channels.Web.Port;
@@ -33,11 +32,48 @@ public static class WebServer
         if (portIdx >= 0 && portIdx + 1 < args.Length && int.TryParse(args[portIdx + 1], out var p))
             port = p;
 
-        if (bootstrap.MemoryStore is null)
-            Console.WriteLine("[Config] 向量记忆已禁用，记忆压缩将使用总结模式");
+        if (bootstrap.MemoryStore is null && !silent)
+            Log.Information("[Config] 向量记忆已禁用，记忆压缩将使用总结模式");
 
         var builder = WebApplication.CreateSlimBuilder();
         builder.WebHost.UseUrls($"http://{address}:{port}");
+
+        // 配置 Serilog 日志记录到文件 ~/.sharpclaw/web.log
+        var logFile = Path.Combine(SharpclawConfig.SharpclawDir, "web.log");
+        var loggerConfig = new LoggerConfiguration()
+            .MinimumLevel.Information()
+            .WriteTo.File(logFile, rollingInterval: RollingInterval.Day,
+                outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] {Message:lj}{NewLine}{Exception}");
+
+        if (!silent)
+        {
+            loggerConfig.WriteTo.Console();
+        }
+
+        Log.Logger = loggerConfig.CreateLogger();
+        builder.Host.UseSerilog();
+
+        // silent 模式下不静默 File Sink，但清除默认 Console Providers 以防万一
+        if (silent)
+        {
+            builder.Logging.ClearProviders();
+        }
+
+        // 如果 QQBot 配置启用，注册为托管服务
+        if (bootstrap.Config.Channels.QQBot.Enabled)
+        {
+            var qqConfig = bootstrap.Config.Channels.QQBot;
+            if (!string.IsNullOrWhiteSpace(qqConfig.AppId) && !string.IsNullOrWhiteSpace(qqConfig.ClientSecret))
+            {
+                builder.Services.AddSingleton(new QQBot.QQBotHostedService(bootstrap));
+                builder.Services.AddHostedService(sp => sp.GetRequiredService<QQBot.QQBotHostedService>());
+                if (!silent) Log.Information("[QQBot] QQ Bot 已注册为托管服务，将随 Web 宿主一同启动");
+            }
+            else
+            {
+                if (!silent) Log.Information("[QQBot] QQ Bot 已启用但 AppId 或 ClientSecret 未配置，跳过注册。");
+            }
+        }
 
         var app = builder.Build();
         app.UseWebSockets();
@@ -50,21 +86,12 @@ public static class WebServer
             return ctx.Response.WriteAsync(indexHtml);
         });
 
-        // 用信号量限制单客户端
-        var semaphore = new SemaphoreSlim(1, 1);
-
+        // WebSocket 端点 — 支持多客户端
         app.Map("/ws", async (HttpContext context) =>
         {
             if (!context.WebSockets.IsWebSocketRequest)
             {
                 context.Response.StatusCode = 400;
-                return;
-            }
-
-            if (!await semaphore.WaitAsync(0))
-            {
-                context.Response.StatusCode = 409; // Conflict
-                await context.Response.WriteAsync("已有客户端连接");
                 return;
             }
 
@@ -75,11 +102,10 @@ public static class WebServer
             }
             catch
             {
-                semaphore.Release();
                 return;
             }
 
-            Console.WriteLine($"[WebSocket] 客户端已连接: {context.Connection.RemoteIpAddress}");
+            Log.Information($"[WebSocket] 客户端已连接: {context.Connection.RemoteIpAddress}");
 
             await using var sender = new WebSocketSender(ws);
             await using var chatIO = new WebSocketChatIO(sender);
@@ -102,7 +128,7 @@ public static class WebServer
             catch (OperationCanceledException) { }
             catch (Exception ex)
             {
-                Console.WriteLine($"[WebSocket] Agent 异常: {ex.Message}");
+                Log.Information($"[WebSocket] Agent 异常: {ex.Message}");
             }
 
             if (ws.State == WebSocketState.Open)
@@ -110,12 +136,11 @@ public static class WebServer
                 await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", CancellationToken.None);
             }
 
-            Console.WriteLine("[WebSocket] 客户端已断开");
-            semaphore.Release();
+            Log.Information("[WebSocket] 客户端已断开");
         });
 
-        Console.WriteLine($"Sharpclaw WebSocket 服务已启动: http://{address}:{port}");
-        Console.WriteLine("按 Ctrl+C 停止");
+        Log.Information($"Sharpclaw Web 服务已启动: http://{address}:{port}");
+        Log.Information("按 Ctrl+C 停止");
 
         await app.RunAsync();
 

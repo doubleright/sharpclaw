@@ -1,4 +1,5 @@
-﻿using System;
+﻿using sharpclaw.Core.TaskManagement;
+using System;
 using System.Collections.Generic;
 using System.Text;
 
@@ -6,6 +7,7 @@ namespace sharpclaw.Core;
 
 public interface IAgentContext
 {
+    public TaskManager TaskManager { get; }
     string GetWorkspaceDirPath();
     void SetWorkspaceDirPath(string path);
     string GetSessionDirPath();
@@ -21,6 +23,14 @@ public class AgentContext : IAgentContext
 {
     private string _sessionPath = string.Empty;
     private string _workspacePath = string.Empty;
+
+    private TaskManager _taskManager;
+    public TaskManager TaskManager => _taskManager;
+
+    public AgentContext(TaskManager taskManager)
+    {
+        _taskManager = taskManager;
+    }
 
     public void SetWorkspaceDirPath(string path)
     {

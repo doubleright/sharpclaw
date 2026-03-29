@@ -8,11 +8,58 @@ permissions:
   contents: write
 
 jobs:
+  build-rustpython-wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1
+
+      - name: Clone RustPython
+        uses: actions/checkout@v4
+        with:
+          repository: RustPython/RustPython
+          path: RustPython
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: RustPython
+
+      - name: Build RustPython WASM
+        run: |
+          cd RustPython
+          cargo build --target wasm32-wasip1 --release --no-default-features \
+            --features freeze-stdlib,stdio,importlib,host_env
+
+      - name: Upload WASM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rustpython-wasm
+          path: RustPython/target/wasm32-wasip1/release/rustpython.wasm
+
   build:
+    needs: build-rustpython-wasm
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        rid: [win-x64, win-arm64, linux-x64, linux-arm64, osx-x64, osx-arm64]
+        include:
+          - rid: win-x64
+            wasmer-url: https://github.com/wasmerio/wasmer/releases/download/v7.1.0/wasmer-windows-amd64.tar.gz
+            wasmer-lib: lib/wasmer.dll
+          - rid: linux-x64
+            wasmer-url: https://github.com/wasmerio/wasmer/releases/download/v7.1.0/wasmer-linux-amd64.tar.gz
+            wasmer-lib: lib/libwasmer.so
+          - rid: linux-arm64
+            wasmer-url: https://github.com/wasmerio/wasmer/releases/download/v7.1.0/wasmer-linux-aarch64.tar.gz
+            wasmer-lib: lib/libwasmer.so
+          - rid: osx-x64
+            wasmer-url: https://github.com/wasmerio/wasmer/releases/download/v7.1.0/wasmer-darwin-amd64.tar.gz
+            wasmer-lib: lib/libwasmer.dylib
+          - rid: osx-arm64
+            wasmer-url: https://github.com/wasmerio/wasmer/releases/download/v7.1.0/wasmer-darwin-arm64.tar.gz
+            wasmer-lib: lib/libwasmer.dylib
     steps:
       - uses: actions/checkout@v4
         with:
@@ -23,8 +70,26 @@ jobs:
           dotnet-version: '10.0.x'
           dotnet-quality: 'preview'
 
+      - name: Download RustPython WASM
+        uses: actions/download-artifact@v4
+        with:
+          name: rustpython-wasm
+          path: rustpython-artifact
+
+      - name: Download Wasmer
+        run: |
+          curl -fsSL "${{ matrix.wasmer-url }}" -o wasmer.tar.gz
+          mkdir -p wasmer-extracted
+          tar xzf wasmer.tar.gz -C wasmer-extracted
+
       - name: Publish
         run: dotnet publish sharpclaw -c Release -r ${{ matrix.rid }} --self-contained -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=none -p:GenerateDocumentationFile=false -o out/${{ matrix.rid }}
+
+      - name: Bundle native dependencies
+        run: |
+          cp wasmer-extracted/${{ matrix.wasmer-lib }} out/${{ matrix.rid }}/
+          mkdir -p out/${{ matrix.rid }}/libs
+          cp rustpython-artifact/rustpython.wasm out/${{ matrix.rid }}/libs/
 
       - name: Package
         run: |

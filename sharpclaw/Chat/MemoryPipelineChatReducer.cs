@@ -139,7 +139,6 @@ public class MemoryPipelineChatReducer : IChatReducer
             }
 
             // 归档（摘要 → 近期记忆 → 溢出巩固核心记忆）
-            await SaveHistoryFileAsync([.. workingMemoryBuffer, .. conversationMessages], cancellationToken);
             if (_archiver is not null)
             {
                 try
@@ -152,8 +151,12 @@ public class MemoryPipelineChatReducer : IChatReducer
                 }
             }
 
-            // 清空对话
-            conversationMessages = [];
+            if (archiveResult == null || archiveResult.Success)
+            {
+                await SaveHistoryFileAsync([.. workingMemoryBuffer, .. conversationMessages], cancellationToken);
+                // 清空对话
+                conversationMessages = [];
+            }
         }
 
         var memoryMessages = new List<ChatMessage>();
@@ -186,7 +189,7 @@ public class MemoryPipelineChatReducer : IChatReducer
         return result;
     }
 
-    private string ConvertMessagesToText(IEnumerable<ChatMessage> messages)
+    public static string ConvertMessagesToText(IEnumerable<ChatMessage> messages)
     {
         var sb = new StringBuilder();
         foreach (var msg in messages)
@@ -234,14 +237,16 @@ public class MemoryPipelineChatReducer : IChatReducer
             if (!Directory.Exists(historyDir))
                 Directory.CreateDirectory(historyDir);
 
-            var fileName = $"{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.md";
-            var filePath = Path.Combine(historyDir, fileName);
+            var fileName = $"{DateTime.Now:yyyy-MM-dd_HH-mm-ss}";
+            var mdFilePath = Path.Combine(historyDir, $"{fileName}.md");
+            var jsonFilePath = Path.Combine(historyDir, $"{fileName}.json");
 
             var sb = new StringBuilder();
             sb.Append($"# 对话历史 {DateTime.Now:yyyy-MM-dd HH:mm:ss}\n\n");
             sb.Append(ConvertMessagesToText(messages));
 
-            await File.WriteAllTextAsync(filePath, sb.ToString(), cancellationToken);
+            await File.WriteAllTextAsync(mdFilePath, sb.ToString(), cancellationToken);
+            await File.WriteAllTextAsync(jsonFilePath, JsonSerializer.Serialize(messages), cancellationToken);
             AppLogger.Log($"[Archive] 已保存历史文件: {fileName}（{messages.Count} 条消息）");
         }
         catch (Exception ex)

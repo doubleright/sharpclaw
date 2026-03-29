@@ -1,0 +1,14 @@
+**/bin/
+**/obj/
+**/.vs/
+**/.idea/
+**/node_modules/
+**/*.user
+**/*.suo
+**/TestResults/
+**/.git/
+**/preview/
+**/*.md
+!sharc/src/**/NuGet_README.md
+Dockerfile
+.dockerignore
