@@ -26,7 +26,6 @@ public sealed class RustPythonWasmRunner : IRustPythonWasmRunner
     private string? _wasmPath;
     private bool _isInitialized;
     private static IntPtr _wasmerHandle;
-    private static bool _resolverSet;
 
     private static string WasmerLibraryFileName =>
         OperatingSystem.IsWindows() ? "wasmer.dll" :
@@ -62,12 +61,7 @@ public sealed class RustPythonWasmRunner : IRustPythonWasmRunner
             throw new FileNotFoundException("未找到 rustpython.wasm。");
 
         _wasmerHandle = NativeLibrary.Load(wasmerPath);
-        if (!_resolverSet)
-        {
-            NativeLibrary.SetDllImportResolver(typeof(WasmerNative).Assembly, (name, _, _) =>
-                name == WasmerNative.LibraryName ? _wasmerHandle : IntPtr.Zero);
-            _resolverSet = true;
-        }
+        NativeWasmLibraryResolver.Register(WasmerNative.LibraryName, _wasmerHandle);
 
         _isInitialized = true;
     }

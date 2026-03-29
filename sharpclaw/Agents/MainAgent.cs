@@ -150,7 +150,7 @@ public class MainAgent
             archiver: _archiver,
             memorySaver: memorySaver);
 
-        var wasmPythonService = new WasmPythonService(agentContext);
+        var wasmPythonService = new WasmtimePythonService(agentContext);
         wasmPythonService.Init();
 
         _agent = new ChatClientBuilder(mainClient)
@@ -164,7 +164,6 @@ public class MainAgent
                     Tools =
                     [
                         .. taskTools,
-                        //AIFunctionFactory.Create(pythonService.RunPython),
                         AIFunctionFactory.Create(wasmPythonService.RunPython)
                     ]
                 }
@@ -301,7 +300,7 @@ public class MainAgent
                             break;
                         case FunctionCallContent call:
                             message.Contents.Add(call);
-                            if ((call.Name == nameof(WasmPythonService.RunPython))
+                            if ((call.Name == nameof(WasmtimePythonService.RunPython))
                                 && call.Arguments != null)
                             {
                                 if (call.Arguments.TryGetValue("purpose", out var purpose))
