@@ -176,6 +176,18 @@ namespace ConsoleInk
         public string CustomContainerBorderStyle { get; set; } = Ansi.FgBrightBlack;
 
         /// <summary>
+        /// Gets or sets the ANSI style for table border characters (box-drawing lines).
+        /// Defaults to Bright Black (gray).
+        /// </summary>
+        public string TableBorderStyle { get; set; } = Ansi.FgBrightBlack;
+
+        /// <summary>
+        /// Gets or sets the ANSI style for table header text.
+        /// Defaults to Bold.
+        /// </summary>
+        public string TableHeaderStyle { get; set; } = Ansi.Bold;
+
+        /// <summary>
         /// Gets or sets the marker string used for an unchecked task list item.
         /// Defaults to "[ ] ".
         /// </summary>
@@ -240,6 +252,8 @@ namespace ConsoleInk
                 MathStyle = "",
                 AbbreviationStyle = "",
                 CustomContainerBorderStyle = "",
+                TableBorderStyle = "",
+                TableHeaderStyle = "",
             };
         }
     }

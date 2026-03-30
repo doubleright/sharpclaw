@@ -41,7 +41,7 @@ namespace ConsoleInk
         private readonly int _maxWidth;
         private bool _isDisposed = false;
         private bool _isCompleted = false;
-        private int _outputLength = 0;
+        private string _outputContent = "";
         private string _rawTail = "";
 
         private readonly Action<string>? _logger;
@@ -188,6 +188,8 @@ namespace ConsoleInk
         /// proper formatting. When ANSI is enabled, the trailing incomplete line is shown
         /// as raw text so tokens appear immediately (erased when the line completes).
         /// All output for a single flush is buffered and written atomically to avoid flicker.
+        /// When Markdig reinterprets earlier content (e.g., paragraph becomes table), ANSI
+        /// cursor erase is used to correct the affected lines in-place.
         /// </summary>
         private void RenderIncremental(bool skipFootnotes = true)
         {
@@ -222,8 +224,8 @@ namespace ConsoleInk
             // Buffer all output for this flush into a single atomic write
             var flushBuffer = new StringBuilder();
 
-            // Erase previous raw tail
-            if (_rawTail.Length > 0)
+            // Erase previous raw tail (always needed before writing new content)
+            if (_rawTail.Length > 0 && _options.EnableColors)
             {
                 int tailLines = (_rawTail.Length + _maxWidth - 1) / _maxWidth;
                 if (tailLines > 1)
@@ -250,10 +252,50 @@ namespace ConsoleInk
 
                 string fullRendered = renderBuffer.ToString();
 
-                if (fullRendered.Length > _outputLength)
+                if (fullRendered.StartsWith(_outputContent, StringComparison.Ordinal))
                 {
-                    flushBuffer.Append(fullRendered.Substring(_outputLength));
-                    _outputLength = fullRendered.Length;
+                    // Happy path: previous output is a prefix → append delta
+                    if (fullRendered.Length > _outputContent.Length)
+                    {
+                        flushBuffer.Append(fullRendered.Substring(_outputContent.Length));
+                        _outputContent = fullRendered;
+                    }
+                }
+                else if (_options.EnableColors)
+                {
+                    // Content changed (e.g., paragraph → table). Erase divergent lines and rewrite.
+                    int divergeAt = 0;
+                    int minLen = Math.Min(_outputContent.Length, fullRendered.Length);
+                    for (int i = 0; i < minLen; i++)
+                    {
+                        if (_outputContent[i] != fullRendered[i]) break;
+                        divergeAt = i + 1;
+                    }
+
+                    // Back up to line boundary
+                    int lineStart = divergeAt;
+                    while (lineStart > 0 && _outputContent[lineStart - 1] != '\n')
+                        lineStart--;
+
+                    // Count terminal lines from divergence to end of old output
+                    int linesToErase = 0;
+                    for (int i = lineStart; i < _outputContent.Length; i++)
+                    {
+                        if (_outputContent[i] == '\n') linesToErase++;
+                    }
+
+                    if (linesToErase > 0)
+                        flushBuffer.Append($"\x1b[{linesToErase}F\x1b[J");
+                    else
+                        flushBuffer.Append("\r\x1b[J");
+
+                    flushBuffer.Append(fullRendered.Substring(lineStart));
+                    _outputContent = fullRendered;
+                }
+                else
+                {
+                    // Non-ANSI fallback: can't erase, but update tracking for correct future deltas
+                    _outputContent = fullRendered;
                 }
             }
 
@@ -915,9 +957,130 @@ namespace ConsoleInk
         // Table Rendering
         // =====================================================================
 
+        /// <summary>
+        /// Calculates the display width of a string, accounting for CJK (fullwidth) characters,
+        /// emoji (including surrogate pairs), variation selectors, and ANSI escape sequences.
+        /// </summary>
+        private static int GetDisplayWidth(string text)
+        {
+            int width = 0;
+            bool inEscape = false;
+            for (int i = 0; i < text.Length; i++)
+            {
+                char c = text[i];
+
+                // Skip ANSI escape sequences
+                if (c == '\x1b')
+                {
+                    inEscape = true;
+                    continue;
+                }
+                if (inEscape)
+                {
+                    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'))
+                        inEscape = false;
+                    continue;
+                }
+
+                // Resolve full Unicode codepoint (handle surrogate pairs)
+                int cp;
+                if (char.IsHighSurrogate(c) && i + 1 < text.Length && char.IsLowSurrogate(text[i + 1]))
+                {
+                    cp = char.ConvertToUtf32(c, text[i + 1]);
+                    i++; // skip low surrogate
+                }
+                else
+                {
+                    cp = c;
+                }
+
+                // Zero-width characters
+                if (cp == 0xFE0F || cp == 0xFE0E  // variation selectors
+                    || cp == 0x200D                // zero-width joiner
+                    || (cp >= 0x0300 && cp <= 0x036F)   // combining diacriticals
+                    || (cp >= 0x1F3FB && cp <= 0x1F3FF) // skin tone modifiers
+                    || (cp >= 0x20D0 && cp <= 0x20FF)   // combining marks for symbols
+                    || (cp >= 0xE0020 && cp <= 0xE007F)) // tags
+                    continue;
+
+                width += IsWideCodepoint(cp) ? 2 : 1;
+            }
+            return width;
+        }
+
+        /// <summary>
+        /// Determines if a Unicode codepoint displays as 2 columns in a terminal.
+        /// Covers CJK, fullwidth forms, and emoji.
+        /// </summary>
+        private static bool IsWideCodepoint(int cp)
+        {
+            // --- CJK & Fullwidth ---
+            if (cp >= 0x1100 && cp <= 0x115F) return true;    // Hangul Jamo
+            if (cp >= 0x2E80 && cp <= 0x303E) return true;    // CJK Radicals .. CJK Symbols
+            if (cp >= 0x3041 && cp <= 0x33BF) return true;    // Hiragana .. CJK Compat
+            if (cp >= 0x3400 && cp <= 0x4DBF) return true;    // CJK Ext A
+            if (cp >= 0x4E00 && cp <= 0x9FFF) return true;    // CJK Unified
+            if (cp >= 0xA000 && cp <= 0xA4CF) return true;    // Yi
+            if (cp >= 0xAC00 && cp <= 0xD7AF) return true;    // Hangul Syllables
+            if (cp >= 0xF900 && cp <= 0xFAFF) return true;    // CJK Compat Ideographs
+            if (cp >= 0xFE30 && cp <= 0xFE6F) return true;    // CJK Compat Forms
+            if (cp >= 0xFF01 && cp <= 0xFF60) return true;    // Fullwidth Forms
+            if (cp >= 0xFFE0 && cp <= 0xFFE6) return true;    // Fullwidth Signs
+
+            // --- BMP Emoji (commonly displayed as 2 columns) ---
+            if (cp == 0x231A || cp == 0x231B) return true;    // ⌚⌛
+            if (cp >= 0x23E9 && cp <= 0x23F3) return true;    // ⏩..⏳
+            if (cp >= 0x23F8 && cp <= 0x23FA) return true;    // ⏸..⏺
+            if (cp == 0x25AA || cp == 0x25AB) return true;    // ▪▫
+            if (cp == 0x25B6 || cp == 0x25C0) return true;    // ▶◀
+            if (cp >= 0x25FB && cp <= 0x25FE) return true;    // ◻..◾
+            if (cp >= 0x2600 && cp <= 0x27BF) return true;    // ☀..➿ (Misc Symbols + Dingbats)
+            if (cp == 0x2934 || cp == 0x2935) return true;    // ⤴⤵
+            if (cp >= 0x2B05 && cp <= 0x2B07) return true;    // ⬅⬆⬇
+            if (cp >= 0x2B1B && cp <= 0x2B1C) return true;    // ⬛⬜
+            if (cp == 0x2B50 || cp == 0x2B55) return true;    // ⭐⭕
+            if (cp == 0x3030 || cp == 0x303D) return true;    // 〰〽
+            if (cp == 0x3297 || cp == 0x3299) return true;    // ㊗㊙
+
+            // --- Supplementary Plane Emoji & CJK ---
+            if (cp >= 0x1F000 && cp <= 0x1FAFF) return true;  // All emoji blocks
+            if (cp >= 0x1FB00 && cp <= 0x1FBFF) return true;  // Legacy computing symbols
+            if (cp >= 0x20000 && cp <= 0x2FA1F) return true;  // CJK Ext B-F
+
+            return false;
+        }
+
+        /// <summary>
+        /// Pads a string to fill a given display width, respecting fullwidth characters.
+        /// </summary>
+        private static string PadToDisplayWidth(string text, int targetWidth, ColumnAlignment alignment)
+        {
+            int displayWidth = GetDisplayWidth(text);
+            int padding = targetWidth - displayWidth;
+            if (padding <= 0) return text;
+
+            switch (alignment)
+            {
+                case ColumnAlignment.Right:
+                    return new string(' ', padding) + text;
+                case ColumnAlignment.Center:
+                    int left = padding / 2;
+                    int right = padding - left;
+                    return new string(' ', left) + text + new string(' ', right);
+                default:
+                    return text + new string(' ', padding);
+            }
+        }
+
         private void RenderTable(Table table)
         {
             if (table.Count == 0) return;
+
+            var theme = _options.Theme ?? ConsoleTheme.Default;
+            bool useAnsi = _options.EnableColors;
+            string borderStyle = useAnsi ? theme.TableBorderStyle : "";
+            string headerStyle = useAnsi ? theme.TableHeaderStyle : "";
+            string reset = useAnsi ? Ansi.Reset : "";
 
             // Gather column definitions
             var columnDefs = table.ColumnDefinitions;
@@ -926,7 +1089,6 @@ namespace ConsoleInk
                 columnCount = firstRow.Count;
 
             var alignments = new ColumnAlignment[columnCount];
-            var originalAlignmentMarkers = new bool[columnCount]; // tracks if left-colon was explicit
             if (columnDefs != null)
             {
                 for (int i = 0; i < columnCount && i < columnDefs.Count; i++)
@@ -937,12 +1099,10 @@ namespace ConsoleInk
                         TableColumnAlign.Right => ColumnAlignment.Right,
                         _ => ColumnAlignment.Left
                     };
-                    // Markdig doesn't distinguish "no alignment" from "left alignment"
-                    // We'll check the raw source to determine if ':' was used
                 }
             }
 
-            // Parse all cells
+            // Parse all cells into plain text
             var headerCells = new List<string>();
             var dataRows = new List<List<string>>();
             bool isFirst = true;
@@ -976,108 +1136,92 @@ namespace ConsoleInk
                 }
             }
 
-            // Calculate column widths
-            var maxWidths = new int[columnCount];
+            // Calculate column widths based on display width (CJK-aware)
+            var colWidths = new int[columnCount];
             for (int i = 0; i < columnCount; i++)
             {
-                int headerWidth = (i < headerCells.Count) ? headerCells[i].Length : 0;
-                int maxContentWidth = 0;
+                int hw = (i < headerCells.Count) ? GetDisplayWidth(headerCells[i]) : 0;
+                int maxData = 0;
                 foreach (var row in dataRows)
                 {
-                    int cellWidth = (i < row.Count) ? row[i].Length : 0;
-                    if (cellWidth > maxContentWidth) maxContentWidth = cellWidth;
+                    int cw = (i < row.Count) ? GetDisplayWidth(row[i]) : 0;
+                    if (cw > maxData) maxData = cw;
                 }
-                maxWidths[i] = Math.Max(Math.Max(headerWidth, maxContentWidth), 3);
+                colWidths[i] = Math.Max(Math.Max(hw, maxData), 3);
             }
 
-            string cellSep = " | ";
-            string linePrefix = "| ";
-            string lineSuffix = " |";
+            // Box-drawing characters
+            const string TL = "┌", TR = "┐", BL = "└", BR = "┘";
+            const string HZ = "─", VT = "│";
+            const string TT = "┬", TB = "┴", ML = "├", MR = "┤", CX = "┼";
 
-            // Render header
-            var sb = new StringBuilder();
-            sb.Append(linePrefix);
-            for (int i = 0; i < columnCount; i++)
-            {
-                string text = (i < headerCells.Count) ? headerCells[i] : "";
-                sb.Append(PadAndAlign(text, maxWidths[i], alignments[i]));
-                if (i < columnCount - 1) sb.Append(cellSep);
-            }
-            sb.Append(lineSuffix);
-            sb.Append(Environment.NewLine);
+            var sb = new System.Text.StringBuilder();
 
-            // Render separator
-            sb.Append(linePrefix);
-            for (int i = 0; i < columnCount; i++)
+            // Helper to write a horizontal border line
+            void AppendBorder(string left, string mid, string right)
             {
-                string sep = BuildSeparator(maxWidths[i], alignments[i]);
-                sb.Append(sep);
-                if (i < columnCount - 1) sb.Append(cellSep);
-            }
-            sb.Append(lineSuffix);
-            sb.Append(Environment.NewLine);
-
-            // Render data rows
-            foreach (var row in dataRows)
-            {
-                sb.Append(linePrefix);
+                sb.Append(borderStyle);
+                sb.Append(left);
                 for (int i = 0; i < columnCount; i++)
                 {
-                    string text = (i < row.Count) ? row[i] : "";
-                    sb.Append(PadAndAlign(text, maxWidths[i], alignments[i]));
-                    if (i < columnCount - 1) sb.Append(cellSep);
+                    sb.Append(new string('─', colWidths[i] + 2)); // +2 for cell padding
+                    sb.Append(i < columnCount - 1 ? mid : right);
                 }
-                sb.Append(lineSuffix);
+                if (useAnsi) sb.Append(reset);
                 sb.Append(Environment.NewLine);
             }
 
+            // Helper to write a data row
+            void AppendRow(List<string> cells, bool isHeader)
+            {
+                sb.Append(borderStyle);
+                sb.Append(VT);
+                if (useAnsi) sb.Append(reset);
+
+                for (int i = 0; i < columnCount; i++)
+                {
+                    string text = (i < cells.Count) ? cells[i] : "";
+                    string padded = PadToDisplayWidth(text, colWidths[i], alignments[i]);
+                    sb.Append(' ');
+                    if (isHeader && headerStyle.Length > 0)
+                    {
+                        sb.Append(headerStyle);
+                        sb.Append(padded);
+                        sb.Append(reset);
+                    }
+                    else
+                    {
+                        sb.Append(padded);
+                    }
+                    sb.Append(' ');
+                    sb.Append(borderStyle);
+                    sb.Append(VT);
+                    if (useAnsi) sb.Append(reset);
+                }
+                sb.Append(Environment.NewLine);
+            }
+
+            // ┌───┬───┐
+            AppendBorder(TL, TT, TR);
+
+            // │ Header │
+            if (headerCells.Count > 0)
+            {
+                AppendRow(headerCells, isHeader: true);
+                // ├───┼───┤
+                AppendBorder(ML, CX, MR);
+            }
+
+            // │ Data │
+            for (int r = 0; r < dataRows.Count; r++)
+            {
+                AppendRow(dataRows[r], isHeader: false);
+            }
+
+            // └───┴───┘
+            AppendBorder(BL, TB, BR);
+
             _outputWriter.Write(sb.ToString());
-        }
-
-        private string BuildSeparator(int width, ColumnAlignment alignment)
-        {
-            var dashes = new string('-', width);
-            switch (alignment)
-            {
-                case ColumnAlignment.Center:
-                    if (width >= 2)
-                    {
-                        var chars = dashes.ToCharArray();
-                        chars[0] = ':';
-                        chars[width - 1] = ':';
-                        return new string(chars);
-                    }
-                    return ":";
-                case ColumnAlignment.Right:
-                    if (width >= 1)
-                    {
-                        var chars = dashes.ToCharArray();
-                        chars[width - 1] = ':';
-                        return new string(chars);
-                    }
-                    return "-";
-                default: // Left
-                    return dashes;
-            }
-        }
-
-        private string PadAndAlign(string text, int totalWidth, ColumnAlignment alignment)
-        {
-            int textLength = text.Length;
-            int paddingNeeded = totalWidth - textLength;
-            if (paddingNeeded <= 0) return text.Substring(0, totalWidth);
-
-            switch (alignment)
-            {
-                case ColumnAlignment.Right:
-                    return new string(' ', paddingNeeded) + text;
-                case ColumnAlignment.Center:
-                    int leftPadding = paddingNeeded / 2;
-                    int rightPadding = paddingNeeded - leftPadding;
-                    return new string(' ', leftPadding) + text + new string(' ', rightPadding);
-                default:
-                    return text + new string(' ', paddingNeeded);
-            }
         }
 
         // =====================================================================
