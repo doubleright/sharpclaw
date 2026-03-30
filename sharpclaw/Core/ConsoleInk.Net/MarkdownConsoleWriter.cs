@@ -82,6 +82,7 @@ namespace ConsoleInk
         public override void Write(char value)
         {
             CheckDisposed();
+            CheckCompleted();
             _inputBuffer.Append(value);
         }
 
@@ -91,6 +92,7 @@ namespace ConsoleInk
         public override void Write(string? value)
         {
             CheckDisposed();
+            CheckCompleted();
             if (value != null)
                 _inputBuffer.Append(value);
         }
@@ -101,6 +103,7 @@ namespace ConsoleInk
         public override void WriteLine(string? value)
         {
             CheckDisposed();
+            CheckCompleted();
             _inputBuffer.Append(value);
             _inputBuffer.Append('\n');
         }
@@ -111,6 +114,7 @@ namespace ConsoleInk
         public override void WriteLine()
         {
             CheckDisposed();
+            CheckCompleted();
             _inputBuffer.Append('\n');
         }
 
@@ -123,12 +127,30 @@ namespace ConsoleInk
             if (_isCompleted) return;
             _log("Complete: Starting Markdig parsing and rendering.");
 
-            // Final render includes footnotes (skipFootnotes: false)
-            RenderIncremental(skipFootnotes: false);
+            // Final render with full erase support. RenderIncremental handles:
+            // - erasing raw tail (if any) via the existing raw tail erase logic
+            // - correcting divergent content (e.g., soft line breaks, table reinterpretation)
+            // Since Complete() parses everything (no tail), no new raw tail is created.
+            RenderIncremental(skipFootnotes: false, allowErase: true);
 
             _outputWriter.Flush();
             _isCompleted = true;
             _log("Complete: Finalization finished.");
+        }
+
+        /// <summary>
+        /// Resets the writer so it can be reused for a new streaming session.
+        /// Call this after Complete() to start writing new content.
+        /// The previous output remains on screen; new content is appended after it.
+        /// </summary>
+        public void Reset()
+        {
+            CheckDisposed();
+            _inputBuffer.Clear();
+            _outputContent = "";
+            _rawTail = "";
+            _isCompleted = false;
+            _log("Reset: Writer state cleared for reuse.");
         }
 
         /// <summary>
@@ -191,7 +213,7 @@ namespace ConsoleInk
         /// When Markdig reinterprets earlier content (e.g., paragraph becomes table), ANSI
         /// cursor erase is used to correct the affected lines in-place.
         /// </summary>
-        private void RenderIncremental(bool skipFootnotes = true)
+        private void RenderIncremental(bool skipFootnotes = true, bool allowErase = true)
         {
             string fullBuffer = _inputBuffer.ToString();
             if (string.IsNullOrEmpty(fullBuffer)) return;
@@ -224,15 +246,16 @@ namespace ConsoleInk
             // Buffer all output for this flush into a single atomic write
             var flushBuffer = new StringBuilder();
 
-            // Erase previous raw tail (always needed before writing new content)
-            if (_rawTail.Length > 0 && _options.EnableColors)
+            // Erase previous raw tail (only during streaming flushes)
+            if (_rawTail.Length > 0 && _options.EnableColors && allowErase)
             {
-                int tailLines = (_rawTail.Length + _maxWidth - 1) / _maxWidth;
+                int tailWidth = GetDisplayWidth(_rawTail);
+                int tailLines = (tailWidth + _maxWidth - 1) / _maxWidth;
                 if (tailLines > 1)
                     flushBuffer.Append($"\x1b[{tailLines - 1}F");
                 flushBuffer.Append("\r\x1b[J");
-                _rawTail = "";
             }
+            _rawTail = "";
 
             // Render complete lines with Markdig
             if (!string.IsNullOrEmpty(markdownText))
@@ -261,7 +284,7 @@ namespace ConsoleInk
                         _outputContent = fullRendered;
                     }
                 }
-                else if (_options.EnableColors)
+                else if (allowErase && _options.EnableColors)
                 {
                     // Content changed (e.g., paragraph → table). Erase divergent lines and rewrite.
                     int divergeAt = 0;
@@ -294,13 +317,15 @@ namespace ConsoleInk
                 }
                 else
                 {
-                    // Non-ANSI fallback: can't erase, but update tracking for correct future deltas
+                    // No erase allowed or non-ANSI: append-only beyond old length
+                    if (fullRendered.Length > _outputContent.Length)
+                        flushBuffer.Append(fullRendered.Substring(_outputContent.Length));
                     _outputContent = fullRendered;
                 }
             }
 
-            // Show raw tail immediately (ANSI only — needs terminal erase support)
-            if (tailText.Length > 0 && _options.EnableColors)
+            // Show raw tail immediately (ANSI only, streaming flush only)
+            if (tailText.Length > 0 && _options.EnableColors && allowErase)
             {
                 flushBuffer.Append(tailText);
                 _rawTail = tailText;
@@ -315,6 +340,12 @@ namespace ConsoleInk
         {
             if (_isDisposed)
                 throw new ObjectDisposedException(GetType().Name);
+        }
+
+        private void CheckCompleted()
+        {
+            if (_isCompleted)
+                throw new InvalidOperationException("Cannot write after Complete(). Call Reset() to reuse this writer.");
         }
 
         // =====================================================================
@@ -965,6 +996,8 @@ namespace ConsoleInk
         {
             int width = 0;
             bool inEscape = false;
+            int lastCpWidth = 0; // width contribution of the last visible character
+
             for (int i = 0; i < text.Length; i++)
             {
                 char c = text[i];
@@ -994,16 +1027,29 @@ namespace ConsoleInk
                     cp = c;
                 }
 
-                // Zero-width characters
-                if (cp == 0xFE0F || cp == 0xFE0E  // variation selectors
-                    || cp == 0x200D                // zero-width joiner
-                    || (cp >= 0x0300 && cp <= 0x036F)   // combining diacriticals
-                    || (cp >= 0x1F3FB && cp <= 0x1F3FF) // skin tone modifiers
-                    || (cp >= 0x20D0 && cp <= 0x20FF)   // combining marks for symbols
-                    || (cp >= 0xE0020 && cp <= 0xE007F)) // tags
+                // VS16 (FE0F): upgrades previous text-presentation emoji to wide (2 columns)
+                if (cp == 0xFE0F)
+                {
+                    if (lastCpWidth == 1)
+                    {
+                        width += 1; // narrow → wide
+                        lastCpWidth = 2;
+                    }
+                    continue;
+                }
+
+                // Other zero-width characters
+                if (cp == 0xFE0E                            // VS15 (text presentation)
+                    || cp == 0x200D                          // zero-width joiner
+                    || (cp >= 0x0300 && cp <= 0x036F)        // combining diacriticals
+                    || (cp >= 0x1F3FB && cp <= 0x1F3FF)      // skin tone modifiers
+                    || (cp >= 0x20D0 && cp <= 0x20FF)        // combining marks for symbols
+                    || (cp >= 0xE0020 && cp <= 0xE007F))     // tags
                     continue;
 
-                width += IsWideCodepoint(cp) ? 2 : 1;
+                int cpWidth = IsWideCodepoint(cp) ? 2 : 1;
+                width += cpWidth;
+                lastCpWidth = cpWidth;
             }
             return width;
         }
@@ -1027,20 +1073,49 @@ namespace ConsoleInk
             if (cp >= 0xFF01 && cp <= 0xFF60) return true;    // Fullwidth Forms
             if (cp >= 0xFFE0 && cp <= 0xFFE6) return true;    // Fullwidth Signs
 
-            // --- BMP Emoji (commonly displayed as 2 columns) ---
+            // --- BMP Emoji with Emoji_Presentation=Yes (default 2 columns) ---
+            // U+2300 block
             if (cp == 0x231A || cp == 0x231B) return true;    // ⌚⌛
             if (cp >= 0x23E9 && cp <= 0x23F3) return true;    // ⏩..⏳
             if (cp >= 0x23F8 && cp <= 0x23FA) return true;    // ⏸..⏺
+            // U+2500 block
             if (cp == 0x25AA || cp == 0x25AB) return true;    // ▪▫
             if (cp == 0x25B6 || cp == 0x25C0) return true;    // ▶◀
             if (cp >= 0x25FB && cp <= 0x25FE) return true;    // ◻..◾
-            if (cp >= 0x2600 && cp <= 0x27BF) return true;    // ☀..➿ (Misc Symbols + Dingbats)
-            if (cp == 0x2934 || cp == 0x2935) return true;    // ⤴⤵
-            if (cp >= 0x2B05 && cp <= 0x2B07) return true;    // ⬅⬆⬇
-            if (cp >= 0x2B1B && cp <= 0x2B1C) return true;    // ⬛⬜
-            if (cp == 0x2B50 || cp == 0x2B55) return true;    // ⭐⭕
-            if (cp == 0x3030 || cp == 0x303D) return true;    // 〰〽
-            if (cp == 0x3297 || cp == 0x3299) return true;    // ㊗㊙
+            // U+2600 Misc Symbols (only Emoji_Presentation=Yes)
+            if (cp == 0x2614 || cp == 0x2615) return true;    // ☔☕
+            if (cp >= 0x2648 && cp <= 0x2653) return true;    // ♈..♓ zodiac
+            if (cp == 0x267F) return true;                     // ♿
+            if (cp == 0x2693) return true;                     // ⚓
+            if (cp == 0x26A1) return true;                     // ⚡
+            if (cp == 0x26AA || cp == 0x26AB) return true;     // ⚪⚫
+            if (cp == 0x26BD || cp == 0x26BE) return true;     // ⚽⚾
+            if (cp == 0x26C4 || cp == 0x26C5) return true;     // ⛄⛅
+            if (cp == 0x26CE) return true;                     // ⛎
+            if (cp == 0x26D4) return true;                     // ⛔
+            if (cp == 0x26EA) return true;                     // ⛪
+            if (cp == 0x26F2 || cp == 0x26F3) return true;     // ⛲⛳
+            if (cp == 0x26F5) return true;                     // ⛵
+            if (cp == 0x26FA) return true;                     // ⛺
+            if (cp == 0x26FD) return true;                     // ⛽
+            // U+2700 Dingbats (only Emoji_Presentation=Yes)
+            if (cp == 0x2705) return true;                     // ✅
+            if (cp == 0x270A || cp == 0x270B) return true;     // ✊✋
+            if (cp == 0x2728) return true;                     // ✨
+            if (cp == 0x274C) return true;                     // ❌
+            if (cp == 0x274E) return true;                     // ❎
+            if (cp >= 0x2753 && cp <= 0x2755) return true;     // ❓❔❕
+            if (cp == 0x2757) return true;                     // ❗
+            if (cp >= 0x2795 && cp <= 0x2797) return true;     // ➕➖➗
+            if (cp == 0x27B0) return true;                     // ➰
+            if (cp == 0x27BF) return true;                     // ➿
+            // U+2900+ block
+            if (cp == 0x2934 || cp == 0x2935) return true;     // ⤴⤵
+            if (cp >= 0x2B05 && cp <= 0x2B07) return true;     // ⬅⬆⬇
+            if (cp >= 0x2B1B && cp <= 0x2B1C) return true;     // ⬛⬜
+            if (cp == 0x2B50 || cp == 0x2B55) return true;     // ⭐⭕
+            if (cp == 0x3030 || cp == 0x303D) return true;     // 〰〽
+            if (cp == 0x3297 || cp == 0x3299) return true;     // ㊗㊙
 
             // --- Supplementary Plane Emoji & CJK ---
             if (cp >= 0x1F000 && cp <= 0x1FAFF) return true;  // All emoji blocks

@@ -229,6 +229,8 @@ public sealed class CliChatIO : IChatIO, IDisposable
             Console.Write("👤 User > ");
             Console.Out.Flush();
             ResetColor();
+            _markdownConsoleWriter.Complete();
+            _markdownConsoleWriter.Reset();
         }
 
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _stopCts.Token);
@@ -318,7 +320,6 @@ public sealed class CliChatIO : IChatIO, IDisposable
                 // 动画还在显示，清除动画行
                 Console.Write('\r');
                 EraseToEnd();
-                _markdownConsoleWriter.Complete();
             }
         }
     }

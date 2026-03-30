@@ -312,6 +312,8 @@ public sealed class CliClient : IDisposable
             Console.Write("👤 User > ");
             Console.Out.Flush();
             ResetColor();
+            _markdownConsoleWriter.Complete();
+            _markdownConsoleWriter.Reset();
         }
     }
 
@@ -391,7 +393,6 @@ public sealed class CliClient : IDisposable
             {
                 Console.Write('\r');
                 EraseToEnd();
-                _markdownConsoleWriter.Complete();
             }
         }
     }
