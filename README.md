@@ -44,7 +44,7 @@ By leveraging the `Microsoft.Extensions.AI` abstraction layer, Sharpclaw seamles
 
 ### 🔒 Secure Configuration
 
-* Cross-platform secure credential storage (Windows Credential Manager, macOS Keychain, Linux libsecret) using AES-256-CBC encryption for API keys.
+* Cross-platform secure credential storage (Windows Credential Manager, macOS Keychain, Linux libsecret) using AES-256-GCM encryption for API keys.
 * Automatic configuration version migration (up to v8).
 * Per-provider custom request body injection (e.g. `"thinking"`, `"reasoning_split"`) — configurable globally or per-agent via the Config Dialog.
 
@@ -135,7 +135,7 @@ dotnet run --project sharpclaw config
 │  ├── AgentBootstrap — Shared initialization + skill loading │
 │  ├── SharpclawConfig — Configuration with encryption        │
 │  ├── ClientFactory — LLM client creation                    │
-│  ├── DataProtector/KeyStore — AES-256-CBC encryption        │
+│  ├── DataProtector/KeyStore — AES-256-GCM encryption        │
 │  └── TaskManager — Background process management            │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -287,7 +287,7 @@ Configuration is stored in `~/.sharpclaw/config.json` (version 8):
 }
 ```
 
-- **API keys** encrypted at rest with AES-256-CBC
+- **API keys** encrypted at rest with AES-256-GCM
 - **Encryption key** stored in OS credential manager
 - **Per-agent overrides** can specify different provider/model
 - **ExtraRequestBody** supports custom fields (e.g., `thinking`)
